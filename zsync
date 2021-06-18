@@ -1,0 +1,73 @@
+#!/bin/bash
+# v0.3
+
+# TODO: handle interruptions / cleanup
+# TODO: fall back from bookmarks to snapshot (get last snapshot form destination and search for it on source)
+# TODO: handle errors if refresh fails (wrong dest dataset for incremental send) (echo $? returns not 0)
+## ex error: cannot receive incremental stream: most recent snapshot of edrive2/crypt does not match incremental source
+
+BOOKMARK_SUFFIX="zsync_incremental"
+DATETIME=$(date +"%Y_%m_%d__%H_%M_%S")
+
+log(){
+	printf "$1\n"
+}
+
+init() {
+    log "Sending '$snap_name' to $destination"
+
+    zfs snapshot $snap_name
+    zfs send $snap_name | pv | zfs recv -vu $destination
+
+    # if the send command completely sucessfully
+    if [ $? -eq 0 ]; then
+        # convert the source snapshot to a bookmark for future incremental sends
+        zfs bookmark $snap_name $bookmark_name
+    fi
+
+    zfs destroy $snap_name
+}
+
+
+refresh() {
+    log "Sending incremental snapshot '$snap_name' to $destination"
+
+    zfs snapshot $snap_name
+    zfs send -i $bookmark_name $snap_name | pv | zfs recv -vFu $destination
+
+    # if the send command completely sucessfully
+    if [ $? -eq 0 ]; then
+        # convert the source snapshot to a bookmark for future incremental sends (overwrite previous bookmark)
+        zfs destroy $bookmark_name
+        zfs bookmark $snap_name $bookmark_name
+
+        # only save most recent snapshot on destination
+        zfs list -t snapshot $destination | tail -n +2 | awk '{print $1}' | head -n -1 | xargs -I snap zfs destroy snap
+    else
+        log "Error: ZFS send failed."
+    fi
+
+    # delete the snapshot that was used for the source
+    zfs destroy $snap_name
+}
+
+# usage: zsync <source dataset> <destination dataset>
+# ex: zsync vault/crypt/school edrive2/school
+
+# check if source dataset exists
+# check if destination pool exists
+
+source=$1
+destination=$2
+dest_pool="${destination%/*}"
+
+snap_name="$source@backup_$DATETIME"
+bookmark_name="$source#$dest_pool-$BOOKMARK_SUFFIX"
+
+# if last bookmark and destination dataset exist
+if (( $(zfs list -t bookmark $source | grep $bookmark_name | wc -l) > 0 )) && (( $(zfs list -r $dest_pool -o name | grep $destination | wc -l) > 0 ))
+then
+    refresh
+else
+    init
+fi

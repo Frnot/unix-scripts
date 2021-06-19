@@ -1,0 +1,17 @@
+#!/bin/bash
+# v0.2
+
+DATETIME=$(date +"%Y_%m_%d__%H_%M_%S")
+
+num2keep=10
+if (( $# > 1 )); then
+    num2keep=$2
+fi
+
+snapname="snap_$DATETIME"
+zfs snapshot $1@$snapname
+
+if (( $(zfs list -t snapshot | grep $1 | wc -l) > $num2keep))
+then
+    zfs list -t snapshot | grep $1 | awk '{print $1}' | head -n -$num2keep | xargs -I snap zfs destroy snap
+fi

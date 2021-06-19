@@ -1,0 +1,44 @@
+#!/bin/bash
+# v0.9
+
+DATETIME=$(date +"%Y_%m_%d__%H_%M_%S")
+
+SOURCE_DIR=${@: -1}
+DEST_DIR=$(basename $SOURCE_DIR)
+
+LOG=/tmp/rclone_"$DEST_DIR"_"$DATETIME".log
+
+
+log() {
+	if [ "$1" == "-e" ]
+	then
+		printf "Error: ${*:2}"
+	else
+		printf "${*:2}"
+	fi
+}
+
+
+if [ -z "$(ls -A $SOURCE_DIR)" ] # if directory is empty
+then
+    log -e "\"$SOURCE_DIR\" is empty or does not exist.\nSkipping sync."
+    exit 1
+fi
+
+
+log "Backing up $SOURCE_DIR to encrypted-gdrive:$DEST_DIR"
+command /usr/bin/rclone sync --drive-stop-on-upload-limit --delete-after --max-backlog=100000 --transfers 2 -v --stats 10s $SOURCE_DIR encrypted_gdrive:$DEST_DIR &>> $LOG
+EXITCODE1=$?
+
+# If rclone exits with code 7 (gdrive limit reached),
+if [ $EXITCODE1 == 7 ]; then
+    ERROR="Google Drive daily upload limit reached."
+    log -e $ERROR
+    cat $ERROR > $LOG
+    exit 1
+# Else if rclone exits with any other error
+elif [ $EXITCODE1 != 0 ]; then
+    log -e "rclone failed to sync $SOURCE_DIR with exit code: $EXITCODE1"
+    cat $LOG >&2
+    exit 1
+fi

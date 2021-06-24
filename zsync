@@ -1,22 +1,26 @@
 #!/bin/bash
-# v0.3
+# v0.4
 
+# TODO: check for zfs and pv before running
 # TODO: handle interruptions / cleanup
 # TODO: fall back from bookmarks to snapshot (get last snapshot form destination and search for it on source)
 # TODO: handle errors if refresh fails (wrong dest dataset for incremental send) (echo $? returns not 0)
 ## ex error: cannot receive incremental stream: most recent snapshot of edrive2/crypt does not match incremental source
+# TODO: add ssh support
 
 BOOKMARK_SUFFIX="zsync_incremental"
 DATETIME=$(date +"%Y_%m_%d__%H_%M_%S")
+
+HELP="Uses ZFS send/recieve to sync a ZFS filesystem between source and destination"
+USAGE="usage: zsync <source dataset> <destination dataset>"
 
 log(){
 	printf "$1\n"
 }
 
 init() {
-    log "Sending '$snap_name' to $destination"
-
     zfs snapshot $snap_name
+    log "Sending '$snap_name' to $destination"
     zfs send $snap_name | pv | zfs recv -vu $destination
 
     # if the send command completely sucessfully
@@ -30,9 +34,8 @@ init() {
 
 
 refresh() {
-    log "Sending incremental snapshot '$snap_name' to $destination"
-
     zfs snapshot $snap_name
+    log "Sending incremental snapshot '$snap_name' to $destination"
     zfs send -i $bookmark_name $snap_name | pv | zfs recv -vFu $destination
 
     # if the send command completely sucessfully
@@ -51,22 +54,42 @@ refresh() {
     zfs destroy $snap_name
 }
 
-# usage: zsync <source dataset> <destination dataset>
-# ex: zsync vault/crypt/school edrive2/school
 
-# check if source dataset exists
-# check if destination pool exists
+
+
+if [ "$1" == "-h" ]; then
+    log "$HELP"
+    log "$USAGE"
+    exit
+fi
+
+if (( $# < 2 )); then
+    log "$USAGE"
+    exit
+fi
 
 source=$1
 destination=$2
 dest_pool="${destination%/*}"
 
+# check that source dataset exists
+if (( $(zfs list | grep $source | wc -l ) == 0 )); then
+    log "Error: source dataset \"$source\" does not exist. exiting"
+    exit
+fi
+
+# check that destination pool exists
+if (( $(zpool list | grep $dest_pool | wc -l ) == 0 )); then
+    log "Error: destination pool \"$dest_pool\" does not exist. exiting"
+    exit
+fi
+
+
 snap_name="$source@backup_$DATETIME"
 bookmark_name="$source#$dest_pool-$BOOKMARK_SUFFIX"
 
 # if last bookmark and destination dataset exist
-if (( $(zfs list -t bookmark $source | grep $bookmark_name | wc -l) > 0 )) && (( $(zfs list -r $dest_pool -o name | grep $destination | wc -l) > 0 ))
-then
+if (( $(zfs list -t bookmark $source | grep $bookmark_name | wc -l) > 0 )) && (( $(zfs list -r $dest_pool -o name | grep $destination | wc -l) > 0 )); then
     refresh
 else
     init

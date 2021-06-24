@@ -1,7 +1,6 @@
 #!/bin/bash
-# v0.4
+# v0.5
 
-# TODO: check for zfs and pv before running
 # TODO: handle interruptions / cleanup
 # TODO: fall back from bookmarks to snapshot (get last snapshot form destination and search for it on source)
 # TODO: handle errors if refresh fails (wrong dest dataset for incremental send) (echo $? returns not 0)
@@ -57,6 +56,19 @@ refresh() {
 
 
 
+# Check that required programs exist on machine
+if ! command -v zfs &> /dev/null; then
+    log "Error: zfs: command not found."
+    exit
+fi
+
+if ! command -v pv &> /dev/null; then
+    log "Error: pv: command not found."
+    exit
+fi
+
+
+# Check for required arguments
 if [ "$1" == "-h" ]; then
     log "$HELP"
     log "$USAGE"
@@ -64,6 +76,7 @@ if [ "$1" == "-h" ]; then
 fi
 
 if (( $# < 2 )); then
+    log "Error: zsync requires two arguments."
     log "$USAGE"
     exit
 fi

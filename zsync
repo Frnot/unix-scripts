@@ -1,5 +1,5 @@
 #!/bin/bash
-# v0.7
+# v0.7.1
 
 # TODO: fall back from bookmarks to snapshot (get last snapshot form destination and search for it on source)
 # TODO: handle errors if refresh fails (wrong dest dataset for incremental send) (echo $? returns not 0)
@@ -132,7 +132,7 @@ if [ "$ssh" = true ]; then
     destination="${destination#*:}"
 fi
 
-dest_pool="${destination%/*}"
+dest_pool="${destination%%/*}"
 
 log $dest_pool
 

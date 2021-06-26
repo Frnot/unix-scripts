@@ -1,17 +1,31 @@
 #!/bin/bash
-# v0.5
+# v0.7
 
-# TODO: handle interruptions / cleanup
 # TODO: fall back from bookmarks to snapshot (get last snapshot form destination and search for it on source)
 # TODO: handle errors if refresh fails (wrong dest dataset for incremental send) (echo $? returns not 0)
-## ex error: cannot receive incremental stream: most recent snapshot of edrive2/crypt does not match incremental source
+## ex error: cannot receive incremental stream: most recent snapshot of edrive2/test does not match incremental source
+## use an older snapshot of edrive2/test if it exists
+## or (use -f to overwrite anyway)
 # TODO: add ssh support
+# TODO: add ssh source support
+# TODO: add resume support
 
 BOOKMARK_SUFFIX="zsync_incremental"
 DATETIME=$(date +"%Y_%m_%d__%H_%M_%S")
 
-HELP="Uses ZFS send/recieve to sync a ZFS filesystem between source and destination"
-USAGE="usage: zsync <source dataset> <destination dataset>"
+USAGE=$(cat <<-END
+Usage: zsync [OPTION] <source dataset> <destination dataset>
+ or    zsync -s, -ssh <source dataset> [<USER>@]<HOST>:<destination dataset>
+END
+)
+
+HELP="
+Uses ZFS send/recieve to sync a ZFS filesystem between source and destination\n
+$USAGE\n
+Options
+ -s, --ssh      send stream to a destination over ssh
+"
+
 
 log(){
 	printf "$1\n"
@@ -19,8 +33,14 @@ log(){
 
 init() {
     zfs snapshot $snap_name
-    log "Sending '$snap_name' to $destination"
-    zfs send $snap_name | pv | zfs recv -vu $destination
+    
+    if [ "$ssh" = true ]; then
+        log "Sending '$snap_name' to '$destination' on remote '$dest_host'"
+        zfs send $snap_name | pv | ssh $dest_host zfs recv -vu $destination
+    else
+        log "Sending '$snap_name' to '$destination'"
+        zfs send $snap_name | pv | zfs recv -vu $destination
+    fi
 
     # if the send command completely sucessfully
     if [ $? -eq 0 ]; then
@@ -34,8 +54,14 @@ init() {
 
 refresh() {
     zfs snapshot $snap_name
-    log "Sending incremental snapshot '$snap_name' to $destination"
-    zfs send -i $bookmark_name $snap_name | pv | zfs recv -vFu $destination
+
+    if [ "$ssh" = true ]; then
+        log "Sending incremental snapshot '$snap_name' to '$destination' on remote '$dest_host'"
+        zfs send -i $bookmark_name $snap_name | pv | ssh $dest_host zfs recv -vFu $destination
+    else
+        log "Sending incremental snapshot '$snap_name' to '$destination'"
+        zfs send -i $bookmark_name $snap_name | pv | zfs recv -vFu $destination
+    fi
 
     # if the send command completely sucessfully
     if [ $? -eq 0 ]; then
@@ -68,32 +94,60 @@ if ! command -v pv &> /dev/null; then
 fi
 
 
+ssh=false
+
+while test $# -gt 0; do
+    case "$1" in
+        -h|--help)
+            log "$HELP"
+            exit
+            ;;
+        -s|--ssh)
+            ssh=true
+            shift
+            ;;
+        *)
+            break
+            ;;
+    esac
+done
+
+
 # Check for required arguments
-if [ "$1" == "-h" ]; then
-    log "$HELP"
+if (( $# < 1 )); then
+    log "Error: missing source argument."
     log "$USAGE"
     exit
-fi
-
-if (( $# < 2 )); then
-    log "Error: zsync requires two arguments."
+elif (( $# < 2 )); then
+    log "Error: missing destination argument."
     log "$USAGE"
     exit
 fi
 
 source=$1
 destination=$2
+
+if [ "$ssh" = true ]; then
+    dest_host="${destination%:*}"
+    destination="${destination#*:}"
+fi
+
 dest_pool="${destination%/*}"
+
+log $dest_pool
 
 # check that source dataset exists
 if (( $(zfs list | grep $source | wc -l ) == 0 )); then
-    log "Error: source dataset \"$source\" does not exist. exiting"
+    log "Error: source dataset \"$source\" does not exist"
     exit
 fi
 
 # check that destination pool exists
 if (( $(zpool list | grep $dest_pool | wc -l ) == 0 )); then
-    log "Error: destination pool \"$dest_pool\" does not exist. exiting"
+    log "Error: destination pool \"$dest_pool\" does not exist"
+    if grep -q ":" <<< $dest_pool; then
+        log "Did you mean to specify ssh (-s)?"
+    fi
     exit
 fi
 

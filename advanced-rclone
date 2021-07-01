@@ -1,10 +1,11 @@
 #!/bin/bash
-# v0.10
+# v0.11
 
 DATETIME=$(date +"%Y_%m_%d__%H_%M_%S")
 
 SOURCE_DIR=${@: -1}
 DEST_DIR=$(basename $SOURCE_DIR)
+REMOTE="encrypted_gdrive"
 
 LOG=/tmp/rclone_"$DEST_DIR".log
 LOG_ROTATE=/tmp/rclone_"$DEST_DIR"_"$DATETIME".log
@@ -19,6 +20,13 @@ log() {
 	fi
 }
 
+# Cleanup will be called on exit
+cleanup(){
+    mv $LOG $LOG_ROTATE
+}
+
+
+trap "cleanup" Exit
 
 if [ -z "$(ls -A $SOURCE_DIR)" ] # if directory is empty
 then
@@ -27,8 +35,8 @@ then
 fi
 
 
-log "Backing up $SOURCE_DIR to encrypted-gdrive:$DEST_DIR"
-command /usr/bin/rclone sync --drive-stop-on-upload-limit --delete-after --max-backlog=100000 --transfers 4 -v --stats 10s $SOURCE_DIR encrypted_gdrive:$DEST_DIR &>> $LOG
+log "Backing up $SOURCE_DIR to $REMOTE:$DEST_DIR"
+command /usr/bin/rclone sync --transfers 4 -v --delete-after --track-renames --track-renames-strategy modtime,leaf --drive-stop-on-upload-limit --stats 10s --max-backlog=100000 $SOURCE_DIR $REMOTE:$DEST_DIR &>> $LOG
 EXITCODE1=$?
 
 # If rclone exits with code 7 (gdrive limit reached),
@@ -36,14 +44,10 @@ if [ $EXITCODE1 == 7 ]; then
     ERROR="Google Drive daily upload limit reached."
     log -e $ERROR
     cat $ERROR > $LOG
-    mv $LOG $LOG_ROTATE
     exit 1
 # Else if rclone exits with any other error
 elif [ $EXITCODE1 != 0 ]; then
     log -e "rclone failed to sync $SOURCE_DIR with exit code: $EXITCODE1"
     cat $LOG >&2
-    mv $LOG $LOG_ROTATE
     exit 1
 fi
-
-mv $LOG $LOG_ROTATE

@@ -1,0 +1,99 @@
+#!/bin/bash
+# v0.7
+
+# This script requires ipmitool
+# dnf/apt install ipmitool
+# Create the following system file
+# enable it with: systemctl enable --now idracfancontrol.service
+
+#### /etc/systemd/system/idracfancontrol.service ###
+#
+# [Unit]
+# Description=iDRAC fan control system
+#
+# [Service]
+# Type=simple
+# ExecStart=/bin/bash /usr/bin/idracfancontrol
+# Restart=always
+#
+# [Install]
+# WantedBy=multi-user.target
+#
+####################################################
+
+SYSTEM_FAN_SPEED=-1
+PAST_TEMP1=50
+PAST_TEMP2=50
+PAST_TEMP3=50
+PAST_TEMP4=50
+
+function setspeed {
+    DATA=$(ipmitool sdr type temperature)
+
+    CPUN=$(printf "%s" "$DATA" | grep -v "Inlet Temp" | grep "Temp" | wc -l)
+
+    if [ $CPUN -gt 1 ]
+    then
+        CPU1=$(printf "%s" "$DATA" | grep "0Eh" | awk -F "|" '{print $5}' | awk '{print $1}')
+        CPU2=$(printf "%s" "$DATA" | grep "0Fh" | awk -F "|" '{print $5}' | awk '{print $1}')
+        if [ $CPU1 -gt $CPU2 ]
+        then
+            TEMP=$CPU1
+        else
+            TEMP=$CPU2
+        fi
+    else
+        TEMP=$(printf "%s" "$DATA" | grep "0Eh" | awk -F "|" '{print $5}' | awk '{print $1}')
+    fi
+
+    if [ $TEMP  == "No" ]; then
+	printf "Bad data from ipmi\n"
+        return 1
+    fi
+
+    AVG_TEMP=$((($TEMP+$PAST_TEMP1+$PAST_TEMP2+$PAST_TEMP3+$PAST_TEMP4)/5))
+
+    PAST_TEMP4=$PAST_TEMP3
+    PAST_TEMP3=$PAST_TEMP2
+    PAST_TEMP2=$PAST_TEMP1
+    PAST_TEMP1=$TEMP
+
+
+    if [ $AVG_TEMP -le 60 ]; then
+        SPEED=$(echo "$AVG_TEMP-50" | bc)
+    fi
+    if [ $AVG_TEMP -gt 60 ]; then
+        SPEED=$(echo "$AVG_TEMP%10+10" | bc)
+    fi
+    if [ $AVG_TEMP -gt 70 ]; then
+        SPEED=$(echo "$AVG_TEMP-50" | bc)
+    fi
+    if [ $AVG_TEMP -gt 80 ]; then
+        SPEED=$(echo "$AVG_TEMP/2-10" | bc)
+    fi
+    # If average temp over 90C, enable idrac automatic fan control
+    if [ $AVG_TEMP -gt 90 ]; then
+        SPEED=-1
+    fi
+
+    if [ $SPEED -ne $SYSTEM_FAN_SPEED ] || [ -z $SYSTEM_FAN_SPEED ]; then
+        if [ $SPEED = -1 ]; then
+            ipmitool raw 0x30 0x30 0x01 0x01
+            printf "Releasing fan control to idrac\n"
+        else
+            if [ $SYSTEM_FAN_SPEED = -1 ]; then
+                ipmitool raw 0x30 0x30 0x01 0x00
+                printf "Taking fan control from idrac\n"
+            fi
+            HEX_SPEED="0x$(echo "obase=16; $SPEED" | bc)"
+            ipmitool raw 0x30 0x30 0x02 0xff $HEX_SPEED
+            printf "Setting fan speed to $SPEED\n"
+        fi
+        SYSTEM_FAN_SPEED=$SPEED
+    fi
+}
+
+while true; do
+    setspeed
+    sleep 5
+done

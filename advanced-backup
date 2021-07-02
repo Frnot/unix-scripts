@@ -1,0 +1,208 @@
+#!/bin/bash
+
+VERSION="1.0.2"
+DATETIME=$(date +"%Y_%m_%d__%H_%M_%S")
+
+# TODO: add support for ZFS
+# TODO: cleanup incomplete archives if tar - xz does not finish
+
+log(){
+	printf "$1\n"
+}
+
+lvmbackup(){
+	local usage="lvm <volume_group/logical_volume> <destination_directory> [-b (number of backups to keep)] [-s (number of snapshots to keep)]\n"
+
+	if [ "$1" == "-h" ]; then
+                printf "$usage"
+		exit
+        fi
+
+	local vg="${1%/*}"
+        local origin="${1#*/}"
+	local snapname=$origin"_snap_$DATETIME"
+	local dest_dir=$2
+	local backups2keep=2
+	local snapshots2keep=7
+
+	# Take snapshot
+	lvm_makesnap
+
+	# Cleanup will be called on exit
+        cleanup(){
+                local vg=$1
+		local snapname=$2
+		log "Cleaning up"
+                # Unmount and deactivate snapshot
+                umount /mnt/$snapname
+                rmdir /mnt/$snapname
+                lvchange -an $vg/$snapname
+        }
+	trap "cleanup '$vg' '$snapname'" Exit
+
+	# Activate and mount snapshot
+        log "Mounting snapshot"
+	lvchange -ay $vg/$snapname
+        mkdir /mnt/$snapname
+        mount /dev/$vg/$snapname /mnt/$snapname
+
+	# Archive snapshot
+        local source_dir=/mnt/$snapname
+        archive
+}
+
+
+lvmsnapshot(){
+	local usage="lvsnap <volume_group/logical_volume> [number of snapshot to keep]"
+
+        local vg="${1%/*}"
+        local origin="${1#*/}"
+	local snapname=$origin"_snap_$DATETIME"
+	local snapshots2keep=7
+
+        if [ "$1" == "-h" ]; then
+                print "$usage"
+        fi
+        if (( $# > 1 )); then
+                snapshots2keep=$2
+        fi
+
+        lvm_makesnap
+}
+
+
+lvm_makesnap() {
+	log "Creating snapshot"
+	lvcreate -kn -s $vg/$origin --name $snapname
+
+	# Remove oldest snapshot(s) until number of snapshots does not exceed "$snapshots2keep"
+        if (( $(lvs -o lv_name,lv_time,origin | tail -n +2 | awk 'x$5' | wc -l) > $snapshots2keep ))
+	then
+		log "Removing excess snapshots, oldest first"
+		lvs -o lv_name,lv_time,origin | tail -n +2 | awk 'x$5' | grep $origin | sort -k2 | head -n -$snapshots2keep | awk '{print $1}' | xargs -I lv lvremove $vg/lv -y
+	fi
+}
+
+
+#zfs(){}
+
+
+# zfssnapshot [dataset] [number of snapshots to keep]
+zfssnap() {
+        local num2keep=10
+        if (( $# > 1 )); then
+                num2keep=$2
+        fi
+
+	snapname="snap_$DATETIME"
+        zfs snapshot $1@$snapname
+
+        if (( $(zfs list -t snapshot | grep $1 | wc -l) > $num2keep))
+        then
+	zfs list -t snapshot | grep $1 | awk '{print $1}' | head -n -$num2keep | xargs -I snap zfs destroy snap
+        fi
+}
+
+archive(){
+	#source_dir=$1
+	#dest_dir=$2
+	name=$(basename $source_dir)
+
+	# Checksum source directory
+	log "Generating checksum for $source_dir"
+	source_sum=$(find $source_dir -type f -print0 | xargs -0 -P 24 -n 1 sha256sum | sort -k 2 | sha256sum | awk '{print $1}')
+	log "$source_sum"
+
+	# Retrieve destination directory
+	log "Retrieving uncompressed checksum from latest archive"
+	newest_archive=$(basename $(ls -1t $dest_dir | grep -x ".*.tar.xz" | head -n 1) .tar.xz )
+	if [ ! -f $dest_dir/$newest_archive.sha256 ]; then
+		log "Checksum could not be found"
+		log "Skipping hash comparison"
+	else
+		dest_sum=$(cat $dest_dir/$(basename $newest_archive .tar.xz).sha256)
+                log "$dest_sum - $dest_dir/$newest_archive"
+		log "Comparing hashes"
+	fi
+
+	if [ $source_sum == $dest_sum ]; then
+	        log "Source and destination files are the same"
+
+		log "Updating timestamps"
+		files=$(ls -1t | grep $newest_archive)
+		for file in $files
+		do
+			ext="${file##*.}"
+			newname=$origin"_snap_"$DATETIME$ext
+
+			log "mv $dest_dir/$file $dest_dir/$newname"
+			mv $dest_dir/$file $dest_dir/$newname
+		done
+
+		log "Exiting"
+	        return
+	fi
+
+	# Write uncompressed checksum to destination
+	printf $source_sum > $dest_dir/$name.sha256
+
+	# Compress source files
+	log "Archiving $source_dir"
+	tar -cf - $source_dir | xz -v9 --threads=0 --memlimit=50% -c - > $dest_dir/$name.tar.xz
+
+	# Generate checksum of tar file
+	log "Generating checksum for $name.tar.xz"
+	tar_sum=$(sha256sum $dest_dir/$name.tar.xz)
+	echo $tar_sum > $dest_dir/$name.tar.xz.sha256
+	log "$tar_sum - $dest_dir/$name.tar.xz"
+
+	# Remove oldest snapshot(s) until number of snapshots does not exceed "$backups2keep"
+        if (( $(ls -1tr $dest_dir | grep -x ".*.tar.xz" | wc -l) > $backups2keep ))
+        then
+		log "Removing old archives"
+                ls -1tr $dest_dir | grep -x ".*.tar.xz" | head -n -$backups2keep | xargs -I file basename file .tar.xz | xargs -I @ rm $dest_dir/@.{sha256,tar.xz,tar.xz.sha256}
+        fi
+}
+
+
+
+
+# takes a snapshot, compares hash, deletes if same, then backs up if not
+#lvm
+#zfs
+
+# just takes a snapshot, compares hash, deletes if same as last
+#snap lvm
+#snap zfs
+
+
+# When adding a script above, be sure to add its option to the switch below!
+case "${1:-}" in
+	-v|version)
+	printf "advanced-backup v$VERSION\n"
+	;;
+
+	-h|--help)
+	prinft $USAGE
+	;;
+
+	lvm)
+	lvmbackup "${@:2}"
+	;;
+
+	zfs)
+	zfsbackup "${@:2}"
+	;;
+
+	snap)
+	case "{2:-}" in
+		lvm)
+		lvmsnapshot "${@:2}"
+		;;
+		zfs)
+		zfssnapshot "${@:2}"
+		;;
+	esac
+	;;
+esac
+

@@ -60,7 +60,7 @@ def prune(dataset, keep_last, keep_minutely, keep_hourly, keep_daily, keep_weekl
         snap = line.split(' ')
         prune_list.append(Snapshot(snap[0], snap[1]))
 
-    last_ctime = None
+    last_ctime = datetime.datetime.fromtimestamp(0)
     for snapshot in reversed(prune_list):
         if keep_last > 0:
             prune_list.remove(snapshot)
@@ -124,7 +124,9 @@ def prune(dataset, keep_last, keep_minutely, keep_hourly, keep_daily, keep_weekl
 
 
     for snap in prune_list:
-        cmd(f"zfs destroy {snap.name()}")
+        command = f"zfs destroy {snap.name()}"
+        if verbose: print(f"Executing command '{command}'")
+        cmd(command)
 
 
 

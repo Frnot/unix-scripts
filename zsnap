@@ -1,27 +1,142 @@
-#!/bin/bash
-# v0.3
+#!/usr/bin/env python3
+# v1.1
 
-DATETIME=$(date +"%Y_%m_%d__%H_%M_%S")
+import datetime
+import getopt
+import sys
+import os
+from os import system as cmd
 
-read_args() {
-    num2keep=10
-    if (( $# > 1 )); then
-        num2keep=$2
-    fi
-}
+verbose = False
 
-prune() {
-    if (( $(zfs list -t snapshot | grep $1 | wc -l) > $num2keep))
-    then
-        zfs list -t snapshot | grep $1 | awk '{print $1}' | head -n -$num2keep | xargs -I snap zfs destroy snap
-    fi
-}
+def main():
+    try:
+        options, remaining_args = getopt.gnu_getopt(sys.argv[1:], "vm:l:h:d:w:M:y:")
+        dataset = remaining_args[0]
+    except:
+        print("usage: ...")
+        sys.exit(2)
 
-snapshot() {
-    snapname="snap_$DATETIME"
-    zfs snapshot $1@$snapname
-}
 
-read_args
-snapshot
-prune
+    keep_last, keep_minutely, keep_hourly, keep_daily, keep_weekly, keep_monthly, keep_yearly = (0,0,0,0,0,0,0)
+
+    for opt, arg in options:
+        if opt == '-m':
+            keep_minutely = int(arg)
+        elif opt == '-l':
+            keep_last = int(arg)
+        elif opt == '-h':
+            keep_hourly = int(arg)
+        elif opt == '-d':
+            keep_daily = int(arg)
+        elif opt == '-w':
+            keep_weekly = int(arg)
+        elif opt == '-M':
+            keep_monthly = int(arg)
+        elif opt == '-y':
+            keep_yearly = int(arg)
+        elif opt == '-v':
+            global verbose
+            verbose = True
+
+    take_snapshot(dataset)
+    prune(dataset, keep_last, keep_minutely, keep_hourly, keep_daily, keep_weekly, keep_monthly, keep_yearly)
+
+
+def take_snapshot(dataset):
+    datetime = os.popen("date +\"%Y_%m_%d__%H_%M_%S\"").read()
+    if verbose: print(f"Taking snapshot of dataset: {dataset}@snap_{datetime}")
+    cmd(f"zfs snapshot {dataset}@snap_{datetime}")
+
+
+def prune(dataset, keep_last, keep_minutely, keep_hourly, keep_daily, keep_weekly, keep_monthly, keep_yearly):
+    if verbose:
+        print(f"pruning snapshots of dataset: {dataset}")
+        print(f"keep_last: {keep_last}, keep_minutely: {keep_minutely}, keep_hourly: {keep_hourly}. keep_daily: {keep_daily}, keep_weekly: {keep_weekly}, keep_monthly: {keep_monthly}, keep_yearly: {keep_yearly}")
+
+    raw_snaplist = os.popen("zfs get -Hp creation -t snapshot %s | awk '{ print $1, $3 }'" % dataset).read().splitlines()
+    prune_list = []
+    for line in raw_snaplist:
+        snap = line.split(' ')
+        prune_list.append(Snapshot(snap[0], snap[1]))
+
+    last_ctime = None
+    for snapshot in reversed(prune_list):
+        if keep_last > 0:
+            prune_list.remove(snapshot)
+            last_ctime = snapshot.ctime()
+            keep_last -= 1
+            continue
+
+        if keep_minutely > 0:
+            if snapshot.ctime().minute == last_ctime.minute:
+                continue
+            else:
+                prune_list.remove(snapshot)
+                last_ctime = snapshot.ctime()
+                keep_minutely -= 1
+                continue
+
+        if keep_hourly > 0:
+            if snapshot.ctime().hour == last_ctime.hour:
+                continue
+            else:
+                prune_list.remove(snapshot)
+                last_ctime = snapshot.ctime()
+                keep_hourly -= 1
+                continue
+
+        if keep_daily > 0:
+            if snapshot.ctime().day == last_ctime.day:
+                continue
+            else:
+                prune_list.remove(snapshot)
+                last_ctime = snapshot.ctime()
+                keep_daily -= 1
+                continue
+
+        if keep_weekly > 0:
+            if snapshot.ctime().strftime("%V") == last_ctime.strftime("%V"):
+                continue
+            else:
+                prune_list.remove(snapshot)
+                last_ctime = snapshot.ctime()
+                keep_weekly -= 1
+                continue
+
+        if keep_monthly > 0:
+            if snapshot.ctime().month == last_ctime.month:
+                continue
+            else:
+                prune_list.remove(snapshot)
+                last_ctime = snapshot.ctime()
+                keep_monthly -= 1
+                continue
+
+        if keep_yearly > 0:
+            if snapshot.ctime().year == last_ctime.year:
+                continue
+            else:
+                prune_list.remove(snapshot)
+                last_ctime = snapshot.ctime()
+                keep_yearly -= 1
+                continue
+
+
+    for snap in prune_list:
+        cmd(f"zfs destroy {snap.name()}")
+
+
+
+class Snapshot:
+    def __init__(self, name, ctime):
+        self.snapname = name
+        self.time = datetime.datetime.fromtimestamp(int(ctime))
+
+    def name(self):
+        return self.snapname
+
+    def ctime(self):
+        return self.time
+
+main()

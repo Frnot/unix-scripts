@@ -120,7 +120,9 @@ def main():
 
     take_snapshot(dataset)
 
-    if not keep_all:
+    if keep_all:
+        if verbose: print("Keep all flag set, will not prune snapshots")
+    else:
         prune(dataset, keep_last, keep_minutely, keep_hourly, keep_daily, keep_weekly, keep_monthly, keep_yearly)
 
 

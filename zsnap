@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# v2.1
+# v2.2
 
 import datetime
 import getopt
@@ -150,58 +150,46 @@ def prune(dataset, keep_last, keep_minutely, keep_hourly, keep_daily, keep_weekl
             continue
 
         if keep_minutely > 0:
-            if snapshot.ctime().minute == last_ctime.minute:
-                continue
-            else:
+            if snapshot.ctime().minute != last_ctime.minute:
                 prune_list.remove(snapshot)
                 last_ctime = snapshot.ctime()
                 keep_minutely -= 1
-                continue
+            continue
 
         if keep_hourly > 0:
-            if snapshot.ctime().hour == last_ctime.hour:
-                continue
-            else:
+            if snapshot.ctime().hour != last_ctime.hour:
                 prune_list.remove(snapshot)
                 last_ctime = snapshot.ctime()
                 keep_hourly -= 1
-                continue
+            continue
 
         if keep_daily > 0:
-            if snapshot.ctime().day == last_ctime.day:
-                continue
-            else:
+            if snapshot.ctime().day != last_ctime.day:
                 prune_list.remove(snapshot)
                 last_ctime = snapshot.ctime()
                 keep_daily -= 1
-                continue
+            continue
 
         if keep_weekly > 0:
-            if snapshot.ctime().strftime("%V") == last_ctime.strftime("%V"):
-                continue
-            else:
+            if snapshot.ctime().strftime("%V") != last_ctime.strftime("%V"):
                 prune_list.remove(snapshot)
                 last_ctime = snapshot.ctime()
                 keep_weekly -= 1
-                continue
+            continue
 
         if keep_monthly > 0:
-            if snapshot.ctime().month == last_ctime.month:
-                continue
-            else:
+            if snapshot.ctime().month != last_ctime.month:
                 prune_list.remove(snapshot)
                 last_ctime = snapshot.ctime()
                 keep_monthly -= 1
-                continue
+            continue
 
         if keep_yearly > 0:
-            if snapshot.ctime().year == last_ctime.year:
-                continue
-            else:
+            if snapshot.ctime().year != last_ctime.year:
                 prune_list.remove(snapshot)
                 last_ctime = snapshot.ctime()
                 keep_yearly -= 1
-                continue
+            continue
 
 
     for snap in prune_list:

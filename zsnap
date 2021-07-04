@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# v1.1
+# v1.2
 
 import datetime
 import getopt
@@ -16,7 +16,6 @@ def main():
     except:
         print("usage: ...")
         sys.exit(2)
-
 
     keep_last, keep_minutely, keep_hourly, keep_daily, keep_weekly, keep_monthly, keep_yearly = (0,0,0,0,0,0,0)
 
@@ -40,6 +39,12 @@ def main():
             verbose = True
 
     take_snapshot(dataset)
+
+    if (keep_last, keep_minutely, keep_hourly, keep_daily, keep_weekly, keep_monthly, keep_yearly) == (0,0,0,0,0,0,0):
+        if verbose:
+            print("No prune options were set. Skipping snapshot pruning")
+        return
+    
     prune(dataset, keep_last, keep_minutely, keep_hourly, keep_daily, keep_weekly, keep_monthly, keep_yearly)
 
 

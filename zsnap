@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# v1.3
+# v2.1
 
 import datetime
 import getopt
@@ -7,40 +7,121 @@ import sys
 import os
 from os import system as cmd
 
+usage = """zsnap is a tool to assist automation of zfs snapshot creation.
+
+Usage: zsnap <dataset> [option]
+  or   zsnap <dataset> <last> <minutely> <hourly> <daily> <weekly> <monthly> <yearly> [option]
+
+Ex:    zsnap pool/data1/data2 -l 5 -d 6 -M 11
+Ex:    zsnap pool/data1/data2 5 0 0 6 0 11 0
+
+Options
+ -l               keep last
+ -m               keep minutely
+ -h               keep hourly
+ -d               keep daily
+ -w               keep weekly
+ -M               keep monthly
+ -y               keep yearly
+ -v               verbose output
+ -k, --keep-all   do not prune snapshots
+     --help       show help
+"""
+
+help = """
+keep last <N>
+    Keep the last <N> backup snapshots.
+keep minutely <N>
+    Keep backups for the last <N> hours. If there is more than one backup for a single hour, only the latest is kept.
+keep hourly <N>
+    Keep backups for the last <N> hours. If there is more than one backup for a single hour, only the latest is kept.
+keep daily <N>
+    Keep backups for the last <N> days. If there is more than one backup for a single day, only the latest is kept.
+keep weekly <N>
+    Keep backups for the last <N> weeks. If there is more than one backup for a single week, only the latest is kept.
+keep monthly <N>
+    Keep backups for the last <N> months. If there is more than one backup for a single month, only the latest is kept.
+keep yearly <N>
+    Keep backups for the last <N> years. If there is more than one backup for a single year, only the latest is kept."""
+
+
 verbose = False
 
 def main():
     try:
-        options, remaining_args = getopt.gnu_getopt(sys.argv[1:], "vm:l:h:d:w:M:y:")
-        dataset = remaining_args[0]
-    except:
-        print("usage: ...")
+        options, remaining_args = getopt.gnu_getopt(sys.argv[1:], "vkm:l:h:d:w:M:y:", ["help","keep-all"])
+    except getopt.GetoptError as error:
+        print(error)
         sys.exit(2)
 
-    keep_last, keep_minutely, keep_hourly, keep_daily, keep_weekly, keep_monthly, keep_yearly = (10,0,0,0,0,0,0)
+    keep_last, keep_minutely, keep_hourly, keep_daily, keep_weekly, keep_monthly, keep_yearly = (0,0,0,0,0,0,0)
 
+    keep_all = False
+    check_arg = True
     for opt, arg in options:
-        if opt == '-m':
-            keep_minutely = int(arg)
-        elif opt == '-l':
+        if opt == '-l':
             keep_last = int(arg)
+            check_arg = False
+        elif opt == '-m':
+            keep_minutely = int(arg)
+            check_arg = False
         elif opt == '-h':
             keep_hourly = int(arg)
+            check_arg = False
         elif opt == '-d':
             keep_daily = int(arg)
+            check_arg = False
         elif opt == '-w':
             keep_weekly = int(arg)
+            check_arg = False
         elif opt == '-M':
             keep_monthly = int(arg)
+            check_arg = False
         elif opt == '-y':
             keep_yearly = int(arg)
+            check_arg = False
         elif opt == '-v':
             global verbose
             verbose = True
+        elif opt == "--help":
+            print(usage)
+            print(help)
+            sys.exit(2)
+        elif opt in ('-k', '--keep-all'):
+            keep_all = True
+            check_arg = False
+
+    if len(remaining_args) > 0:
+        dataset = remaining_args[0]
+    else:
+        print("Missing argument 'dataset'")
+        print(usage)
+        sys.exit(2)
+
+    if check_arg:
+        if len(remaining_args) < 8:
+            print("Missing a required prune option")
+            print(usage)
+            sys.exit(2)
+        keep_last = int(remaining_args[1])
+        keep_minutely = int(remaining_args[2])
+        keep_hourly = int(remaining_args[3])
+        keep_daily = int(remaining_args[4])
+        keep_weekly = int(remaining_args[5])
+        keep_monthly = int(remaining_args[6])
+        keep_yearly = int(remaining_args[7])
+
+
+    if not keep_all:
+        if (keep_last, keep_minutely, keep_hourly, keep_daily, keep_weekly, keep_monthly, keep_yearly) == (0,0,0,0,0,0,0):
+            print("Error: cannot set all pruning options to zero. (must specify '-k')")
+            print(usage)
+            return
 
     take_snapshot(dataset)
-    
-    prune(dataset, keep_last, keep_minutely, keep_hourly, keep_daily, keep_weekly, keep_monthly, keep_yearly)
+
+    if not keep_all:
+        prune(dataset, keep_last, keep_minutely, keep_hourly, keep_daily, keep_weekly, keep_monthly, keep_yearly)
 
 
 def take_snapshot(dataset):
@@ -51,7 +132,7 @@ def take_snapshot(dataset):
 
 def prune(dataset, keep_last, keep_minutely, keep_hourly, keep_daily, keep_weekly, keep_monthly, keep_yearly):
     if verbose:
-        print(f"pruning snapshots of dataset: {dataset}")
+        print(f"Pruning snapshots of dataset: {dataset}")
         print(f"keep_last: {keep_last}, keep_minutely: {keep_minutely}, keep_hourly: {keep_hourly}. keep_daily: {keep_daily}, keep_weekly: {keep_weekly}, keep_monthly: {keep_monthly}, keep_yearly: {keep_yearly}")
 
     raw_snaplist = os.popen("zfs get -Hp creation -t snapshot %s | awk '{ print $1, $3 }'" % dataset).read().splitlines()

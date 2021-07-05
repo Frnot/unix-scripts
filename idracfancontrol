@@ -1,5 +1,5 @@
 #!/bin/bash
-# v0.7
+# v0.8
 
 # This script requires ipmitool
 # dnf/apt install ipmitool
@@ -47,7 +47,7 @@ function setspeed {
     fi
 
     if [ $TEMP  == "No" ]; then
-	printf "Bad data from ipmi\n"
+        printf "Bad data from ipmi\n"
         return 1
     fi
 
@@ -87,7 +87,7 @@ function setspeed {
             fi
             HEX_SPEED="0x$(echo "obase=16; $SPEED" | bc)"
             ipmitool raw 0x30 0x30 0x02 0xff $HEX_SPEED
-            printf "Setting fan speed to $SPEED\n"
+            printf "Setting fan speed to $SPEED - Temperature: ~$AVG_TEMP C\n"
         fi
         SYSTEM_FAN_SPEED=$SPEED
     fi

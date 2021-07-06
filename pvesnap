@@ -1,0 +1,222 @@
+#!/usr/bin/env python3
+# v0.1
+
+
+import datetime
+import getopt
+import sys
+import os
+from os import system as cmd
+
+usage = """pvesnap is a tool to assist automation of snapshot creation proxmox.
+A slightly modified version of zsnap (https://github.com/Frnot/unix-scripts/blob/main/zsnap)
+
+Usage: pvesnap <vmid> [option]
+  or   pvesnap <vmid> <last> <minutely> <hourly> <daily> <weekly> <monthly> <yearly> [option]
+
+Ex:    pvesnap 101 -l 5 -d 6 -M 11
+Ex:    pvesnap 101 5 0 0 6 0 11 0
+
+Options
+ -l               keep last
+ -m               keep minutely
+ -h               keep hourly
+ -d               keep daily
+ -w               keep weekly
+ -M               keep monthly
+ -y               keep yearly
+ -v               verbose output
+ -k, --keep-all   do not prune snapshots
+     --help       show help
+"""
+
+help = """
+keep last <N>
+    Keep the last <N> backup snapshots.
+keep minutely <N>
+    Keep backups for the last <N> hours. If there is more than one backup for a single hour, only the latest is kept.
+keep hourly <N>
+    Keep backups for the last <N> hours. If there is more than one backup for a single hour, only the latest is kept.
+keep daily <N>
+    Keep backups for the last <N> days. If there is more than one backup for a single day, only the latest is kept.
+keep weekly <N>
+    Keep backups for the last <N> weeks. If there is more than one backup for a single week, only the latest is kept.
+keep monthly <N>
+    Keep backups for the last <N> months. If there is more than one backup for a single month, only the latest is kept.
+keep yearly <N>
+    Keep backups for the last <N> years. If there is more than one backup for a single year, only the latest is kept.
+    
+To snapshot all running VMs automatically, calculated your desired options and then put the following line in the root crontab:
+
+"/usr/sbin/qm list | tail -n+2 | grep "running" | awk '{print $1}' | xargs -I vmid pvesnap vmid <options>"
+"""
+
+
+verbose = False
+
+def main():
+    try:
+        options, remaining_args = getopt.gnu_getopt(sys.argv[1:], "vkm:l:h:d:w:M:y:", ["help","keep-all"])
+    except getopt.GetoptError as error:
+        print(error)
+        sys.exit(2)
+
+    keep_last, keep_minutely, keep_hourly, keep_daily, keep_weekly, keep_monthly, keep_yearly = (0,0,0,0,0,0,0)
+
+    keep_all = False
+    check_arg = True
+    for opt, arg in options:
+        if opt == '-l':
+            keep_last = int(arg)
+            check_arg = False
+        elif opt == '-m':
+            keep_minutely = int(arg)
+            check_arg = False
+        elif opt == '-h':
+            keep_hourly = int(arg)
+            check_arg = False
+        elif opt == '-d':
+            keep_daily = int(arg)
+            check_arg = False
+        elif opt == '-w':
+            keep_weekly = int(arg)
+            check_arg = False
+        elif opt == '-M':
+            keep_monthly = int(arg)
+            check_arg = False
+        elif opt == '-y':
+            keep_yearly = int(arg)
+            check_arg = False
+        elif opt == '-v':
+            global verbose
+            verbose = True
+        elif opt == "--help":
+            print(usage)
+            print(help)
+            sys.exit(2)
+        elif opt in ('-k', '--keep-all'):
+            keep_all = True
+            check_arg = False
+
+    if len(remaining_args) > 0:
+        vmid = remaining_args[0]
+    else:
+        print("Missing argument 'vmid'")
+        print(usage)
+        sys.exit(2)
+
+    if check_arg:
+        if len(remaining_args) < 8:
+            print("Missing a required prune option")
+            print(usage)
+            sys.exit(2)
+        keep_last = int(remaining_args[1])
+        keep_minutely = int(remaining_args[2])
+        keep_hourly = int(remaining_args[3])
+        keep_daily = int(remaining_args[4])
+        keep_weekly = int(remaining_args[5])
+        keep_monthly = int(remaining_args[6])
+        keep_yearly = int(remaining_args[7])
+
+
+    if not keep_all:
+        if (keep_last, keep_minutely, keep_hourly, keep_daily, keep_weekly, keep_monthly, keep_yearly) == (0,0,0,0,0,0,0):
+            print("Error: cannot set all pruning options to zero. (must specify '-k')")
+            print(usage)
+            return
+
+    take_snapshot(vmid)
+
+    if keep_all:
+        if verbose: print("Keep all flag set, will not prune snapshots")
+    else:
+        prune(vmid, keep_last, keep_minutely, keep_hourly, keep_daily, keep_weekly, keep_monthly, keep_yearly)
+
+
+def take_snapshot(vmid):
+    datetime = os.popen("date +\"%Y_%m_%d__%H_%M_%S\"").read()
+    if verbose: print(f"Taking snapshot of vmid: auto_{datetime}")
+    cmd(f"/usr/sbin/qm snapshot {vmid} auto_{datetime} --vmstate")
+
+
+def prune(vmid, keep_last, keep_minutely, keep_hourly, keep_daily, keep_weekly, keep_monthly, keep_yearly):
+    if verbose:
+        print(f"Pruning snapshots of vmid: {vmid}")
+        print(f"keep_last: {keep_last}, keep_minutely: {keep_minutely}, keep_hourly: {keep_hourly}. keep_daily: {keep_daily}, keep_weekly: {keep_weekly}, keep_monthly: {keep_monthly}, keep_yearly: {keep_yearly}")
+
+    raw_snaplist = os.popen("/usr/sbin/qm listsnapshot %s | awk '{print $2}' | head -n -1" % vmid).read().splitlines()
+    prune_list = []
+    for line in raw_snaplist:
+        snap = line.split(' ')
+        prune_list.append(Snapshot(snap[0], snap[1]))
+
+    last_ctime = datetime.datetime.fromtimestamp(0)
+    for snapshot in reversed(prune_list):
+        if keep_last > 0:
+            prune_list.remove(snapshot)
+            last_ctime = snapshot.ctime()
+            keep_last -= 1
+            continue
+
+        if keep_minutely > 0:
+            if snapshot.ctime().minute != last_ctime.minute:
+                prune_list.remove(snapshot)
+                last_ctime = snapshot.ctime()
+                keep_minutely -= 1
+            continue
+
+        if keep_hourly > 0:
+            if snapshot.ctime().hour != last_ctime.hour:
+                prune_list.remove(snapshot)
+                last_ctime = snapshot.ctime()
+                keep_hourly -= 1
+            continue
+
+        if keep_daily > 0:
+            if snapshot.ctime().day != last_ctime.day:
+                prune_list.remove(snapshot)
+                last_ctime = snapshot.ctime()
+                keep_daily -= 1
+            continue
+
+        if keep_weekly > 0:
+            if snapshot.ctime().strftime("%V") != last_ctime.strftime("%V"):
+                prune_list.remove(snapshot)
+                last_ctime = snapshot.ctime()
+                keep_weekly -= 1
+            continue
+
+        if keep_monthly > 0:
+            if snapshot.ctime().month != last_ctime.month:
+                prune_list.remove(snapshot)
+                last_ctime = snapshot.ctime()
+                keep_monthly -= 1
+            continue
+
+        if keep_yearly > 0:
+            if snapshot.ctime().year != last_ctime.year:
+                prune_list.remove(snapshot)
+                last_ctime = snapshot.ctime()
+                keep_yearly -= 1
+            continue
+
+
+    for snap in prune_list:
+        command = f"/usr/sbin/qm delsnapshot {vmid} {snap.name()}"
+        if verbose: print(f"Executing command '{command}'")
+        cmd(command)
+
+
+
+class Snapshot:
+    def __init__(self, name, ctime):
+        self.snapname = name
+        self.time = datetime.datetime.fromtimestamp(int(ctime))
+
+    def name(self):
+        return self.snapname
+
+    def ctime(self):
+        return self.time
+
+main()

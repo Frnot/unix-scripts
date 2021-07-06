@@ -1,5 +1,5 @@
 #!/bin/bash
-# v0.7
+# v0.10
 
 # This script requires ipmitool
 # dnf/apt install ipmitool
@@ -47,7 +47,7 @@ function setspeed {
     fi
 
     if [ $TEMP  == "No" ]; then
-	printf "Bad data from ipmi\n"
+        printf "Bad data from ipmi\n"
         return 1
     fi
 
@@ -59,17 +59,17 @@ function setspeed {
     PAST_TEMP1=$TEMP
 
 
-    if [ $AVG_TEMP -le 60 ]; then
-        SPEED=$(echo "$AVG_TEMP-50" | bc)
+    if [ $AVG_TEMP -le 65 ]; then
+        SPEED=5
     fi
-    if [ $AVG_TEMP -gt 60 ]; then
-        SPEED=$(echo "$AVG_TEMP%10+10" | bc)
+    if [ $AVG_TEMP -gt 65 ]; then
+        SPEED=$(echo "$AVG_TEMP%10" | bc)
     fi
-    if [ $AVG_TEMP -gt 70 ]; then
-        SPEED=$(echo "$AVG_TEMP-50" | bc)
+    if [ $AVG_TEMP -ge 70 ]; then
+        SPEED=$(echo "$AVG_TEMP-55" | bc)
     fi
     if [ $AVG_TEMP -gt 80 ]; then
-        SPEED=$(echo "$AVG_TEMP/2-10" | bc)
+        SPEED=$(echo "$AVG_TEMP-55" | bc)
     fi
     # If average temp over 90C, enable idrac automatic fan control
     if [ $AVG_TEMP -gt 90 ]; then
@@ -77,6 +77,9 @@ function setspeed {
     fi
 
     if [ $SPEED -ne $SYSTEM_FAN_SPEED ] || [ -z $SYSTEM_FAN_SPEED ]; then
+        if [ $SPEED -lt $SYSTEM_FAN_SPEED ] && [ $(( $SYSTEM_FAN_SPEED - $SPEED )) -le 2 ]; then
+            return
+        fi
         if [ $SPEED = -1 ]; then
             ipmitool raw 0x30 0x30 0x01 0x01
             printf "Releasing fan control to idrac\n"
@@ -87,7 +90,7 @@ function setspeed {
             fi
             HEX_SPEED="0x$(echo "obase=16; $SPEED" | bc)"
             ipmitool raw 0x30 0x30 0x02 0xff $HEX_SPEED
-            printf "Setting fan speed to $SPEED\n"
+            printf "Setting fan speed to $SPEED - Temperature: ~$AVG_TEMP C\n"
         fi
         SYSTEM_FAN_SPEED=$SPEED
     fi

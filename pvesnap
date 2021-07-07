@@ -1,15 +1,14 @@
 #!/usr/bin/env python3
-# v0.3
+# v0.4
 
-
+import time
 import datetime
 import getopt
 import sys
 import os
 from os import system as cmd
 
-usage = """pvesnap is a tool to assist automation of snapshot creation proxmox.
-A slightly modified version of zsnap (https://github.com/Frnot/unix-scripts/blob/main/zsnap)
+usage = """pvesnap is a tool to assist automation of snapshot creation in proxmox.
 
 Usage: pvesnap <vmid> [option]
   or   pvesnap <vmid> <last> <minutely> <hourly> <daily> <weekly> <monthly> <yearly> [option]
@@ -47,7 +46,6 @@ keep yearly <N>
     Keep backups for the last <N> years. If there is more than one backup for a single year, only the latest is kept.
     
 To snapshot all running VMs automatically, calculated your desired options and then put the following line in the root crontab:
-
 "/usr/sbin/qm list | tail -n+2 | grep "running" | awk '{print $1}' | xargs -I vmid pvesnap vmid <options>"
 """
 
@@ -125,7 +123,20 @@ def main():
             print(usage)
             return
 
-    take_snapshot(vmid)
+    retry = 3
+    while True:
+        retry -= 1
+        success = take_snapshot(vmid)
+        if success: break
+
+        if verbose: print(f"Snapshot of {vmid} failed.")
+        if retry > 0: 
+            if verbose: print(f"Waiting 30 seconds before retrying. Will retry {retry} more times")
+            time.sleep(30)
+        else:
+            print(f"Snapshot of {vmid} failed. exiting.")
+            sys.exit(2)
+
 
     if keep_all:
         if verbose: print("Keep all flag set, will not prune snapshots")
@@ -133,10 +144,13 @@ def main():
         prune(vmid, keep_last, keep_minutely, keep_hourly, keep_daily, keep_weekly, keep_monthly, keep_yearly)
 
 
+
 def take_snapshot(vmid):
     time = datetime.datetime.now().strftime("%Y_%m_%d__%H_%M_%S")
     if verbose: print(f"Taking snapshot of vmid: auto_{time}")
-    cmd(f"/usr/sbin/qm snapshot {vmid} auto_{time} --vmstate")
+    exitcode = cmd(f"/usr/sbin/qm snapshot {vmid} auto_{time} --vmstate")
+    return True if exitcode == 0 else False
+
 
 
 def prune(vmid, keep_last, keep_minutely, keep_hourly, keep_daily, keep_weekly, keep_monthly, keep_yearly):

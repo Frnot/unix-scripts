@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# v0.1
+# v0.2
 
 
 import datetime
@@ -134,9 +134,9 @@ def main():
 
 
 def take_snapshot(vmid):
-    datetime = os.popen("date +\"%Y_%m_%d__%H_%M_%S\"").read()
-    if verbose: print(f"Taking snapshot of vmid: auto_{datetime}")
-    cmd(f"/usr/sbin/qm snapshot {vmid} auto_{datetime} --vmstate")
+    time = datetime.datetime.now().strftime("%Y_%m_%d__%H_%M_%S")
+    if verbose: print(f"Taking snapshot of vmid: auto_{time}")
+    cmd(f"/usr/sbin/qm snapshot {vmid} auto_{time} --vmstate")
 
 
 def prune(vmid, keep_last, keep_minutely, keep_hourly, keep_daily, keep_weekly, keep_monthly, keep_yearly):

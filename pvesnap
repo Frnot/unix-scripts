@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# v0.6
+# v0.7
 
 import time
 import datetime
@@ -130,9 +130,9 @@ def main():
         success = take_snapshot(vmid)
         if success: break
 
-        if verbose: print(f"Snapshot of {vmid} failed.")
+        print(f"Snapshot of {vmid} failed.")
         if retry > 0: 
-            if verbose: print(f"Waiting 30 seconds before retrying. Will retry {retry} more times")
+            print(f"Waiting 30 seconds before retrying. Will retry {retry} more times")
             time.sleep(30)
         else:
             print(f"Snapshot of vmid {vmid} failed. exiting.")

@@ -1,13 +1,12 @@
 #!/bin/bash
-# v0.7.1
+# v0.7.2
 
 # TODO: fall back from bookmarks to snapshot (get last snapshot form destination and search for it on source)
 # TODO: handle errors if refresh fails (wrong dest dataset for incremental send) (echo $? returns not 0)
 ## ex error: cannot receive incremental stream: most recent snapshot of edrive2/test does not match incremental source
 ## use an older snapshot of edrive2/test if it exists
 ## or (use -f to overwrite anyway)
-# TODO: add ssh support
-# TODO: add ssh source support
+# TODO: add ssh source support (if zfs supports it)
 # TODO: add resume support
 
 BOOKMARK_SUFFIX="zsync_incremental"
@@ -15,7 +14,7 @@ DATETIME=$(date +"%Y_%m_%d__%H_%M_%S")
 
 USAGE=$(cat <<-END
 Usage: zsync [OPTION] <source dataset> <destination dataset>
- or    zsync -s, -ssh <source dataset> [<USER>@]<HOST>:<destination dataset>
+ or    zsync <-s | -ssh> <source dataset> [<USER>@]<HOST>:<destination dataset>
 END
 )
 
@@ -24,6 +23,8 @@ Uses ZFS send/recieve to sync a ZFS filesystem between source and destination\n
 $USAGE\n
 Options
  -s, --ssh      send stream to a destination over ssh
+ -h, --help     show help
+ -v,            enable verbose output
 "
 
 
@@ -95,12 +96,17 @@ fi
 
 
 ssh=false
+verbose=false
 
 while test $# -gt 0; do
     case "$1" in
         -h|--help)
             log "$HELP"
             exit
+            ;;
+        -v)
+            verbose=true
+            shift
             ;;
         -s|--ssh)
             ssh=true
@@ -134,8 +140,6 @@ fi
 
 dest_pool="${destination%%/*}"
 
-log $dest_pool
-
 # check that source dataset exists
 if (( $(zfs list | grep $source | wc -l ) == 0 )); then
     log "Error: source dataset \"$source\" does not exist"
@@ -159,5 +163,7 @@ bookmark_name="$source#$dest_pool-$BOOKMARK_SUFFIX"
 if (( $(zfs list -t bookmark $source | grep $bookmark_name | wc -l) > 0 )) && (( $(zfs list -r $dest_pool -o name | grep $destination | wc -l) > 0 )); then
     refresh
 else
+    # add verbose output - reason for init
+    # do something if bookmark doesnt exist but destination dataset does
     init
 fi

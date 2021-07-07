@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# v0.4
+# v0.5
 
 import time
 import datetime
@@ -26,10 +26,11 @@ Options
  -y               keep yearly
  -v               verbose output
  -k, --keep-all   do not prune snapshots
-     --help       show help
-"""
+     --help       show help"""
 
 help = """
+the prune options work a lot like the proxmox backup retention options
+
 keep last <N>
     Keep the last <N> backup snapshots.
 keep minutely <N>
@@ -147,7 +148,7 @@ def main():
 
 def take_snapshot(vmid):
     time = datetime.datetime.now().strftime("%Y_%m_%d__%H_%M_%S")
-    if verbose: print(f"Taking snapshot of vmid: auto_{time}")
+    if verbose: print(f"Taking snapshot of vmid: {vmid} (auto_{time})")
     exitcode = cmd(f"/usr/sbin/qm snapshot {vmid} auto_{time} --vmstate")
     return True if exitcode == 0 else False
 

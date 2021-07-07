@@ -130,7 +130,11 @@ def main():
         success = take_snapshot(vmid)
         if success: break
 
+<<<<<<< HEAD
         print(f"Snapshot of vmid {vmid} failed.")
+=======
+        print(f"Snapshot of {vmid} failed.")
+>>>>>>> 99093e4679811d5317f3f3f635933b44e2eb5b4b
         if retry > 0: 
             print(f"Waiting 30 seconds before retrying. Will retry {retry} more times")
             time.sleep(30)

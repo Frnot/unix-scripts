@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-# v0.5
+# v0.6
 
 import time
 import datetime
 import getopt
 import sys
 import os
-from os import system as cmd
+import subprocess
 
 usage = """pvesnap is a tool to assist automation of snapshot creation in proxmox.
 
@@ -135,7 +135,7 @@ def main():
             if verbose: print(f"Waiting 30 seconds before retrying. Will retry {retry} more times")
             time.sleep(30)
         else:
-            print(f"Snapshot of {vmid} failed. exiting.")
+            print(f"Snapshot of vmid {vmid} failed. exiting.")
             sys.exit(2)
 
 
@@ -149,8 +149,12 @@ def main():
 def take_snapshot(vmid):
     time = datetime.datetime.now().strftime("%Y_%m_%d__%H_%M_%S")
     if verbose: print(f"Taking snapshot of vmid: {vmid} (auto_{time})")
-    exitcode = cmd(f"/usr/sbin/qm snapshot {vmid} auto_{time} --vmstate")
-    return True if exitcode == 0 else False
+    if verbose: 
+        output = None
+    else: # Suppress stdout from command
+        output = subprocess.PIPE
+    result = subprocess.run(["/usr/sbin/qm", "snapshot", vmid, f"auto_{time}", "--vmstate"], stdout=output)
+    return True if result.returncode == 0 else False
 
 
 
@@ -217,9 +221,12 @@ def prune(vmid, keep_last, keep_minutely, keep_hourly, keep_daily, keep_weekly, 
 
 
     for snap in prune_list:
-        command = f"/usr/sbin/qm delsnapshot {vmid} {snap.name()}"
-        if verbose: print(f"Executing command '{command}'")
-        cmd(command)
+        if verbose: print(f"Deleting snapshot: {snap.name()}")
+        if verbose:
+            output = None
+        else: # Suppress stdout from command
+            output = subprocess.PIPE
+        subprocess.run(["/usr/sbin/qm", "delsnapshot", vmid, snap.name()], stdout=output)
 
 
 

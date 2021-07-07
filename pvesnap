@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# v0.2
+# v0.3
 
 
 import datetime
@@ -144,10 +144,10 @@ def prune(vmid, keep_last, keep_minutely, keep_hourly, keep_daily, keep_weekly, 
         print(f"Pruning snapshots of vmid: {vmid}")
         print(f"keep_last: {keep_last}, keep_minutely: {keep_minutely}, keep_hourly: {keep_hourly}. keep_daily: {keep_daily}, keep_weekly: {keep_weekly}, keep_monthly: {keep_monthly}, keep_yearly: {keep_yearly}")
 
-    raw_snaplist = os.popen("/usr/sbin/qm listsnapshot %s | awk '{print $2}' | head -n -1" % vmid).read().splitlines()
+    raw_snaplist = os.popen("/usr/sbin/qm listsnapshot %s | awk '{print $2, $3, $4}' | head -n -1" % vmid).read().splitlines()
     prune_list = []
     for line in raw_snaplist:
-        snap = line.split(' ')
+        snap = line.split(' ', 1)
         prune_list.append(Snapshot(snap[0], snap[1]))
 
     last_ctime = datetime.datetime.fromtimestamp(0)
@@ -211,7 +211,7 @@ def prune(vmid, keep_last, keep_minutely, keep_hourly, keep_daily, keep_weekly, 
 class Snapshot:
     def __init__(self, name, ctime):
         self.snapname = name
-        self.time = datetime.datetime.fromtimestamp(int(ctime))
+        self.time = datetime.datetime.strptime(ctime, "%Y-%m-%d %H:%M:%S")
 
     def name(self):
         return self.snapname

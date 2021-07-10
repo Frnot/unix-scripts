@@ -1,5 +1,5 @@
 #!/bin/bash
-# v0.7.2
+# v0.7.3
 
 # TODO: fall back from bookmarks to snapshot (get last snapshot form destination and search for it on source)
 # TODO: handle errors if refresh fails (wrong dest dataset for incremental send) (echo $? returns not 0)
@@ -34,7 +34,7 @@ log(){
 
 init() {
     zfs snapshot $snap_name
-    
+
     if [ "$ssh" = true ]; then
         log "Sending '$snap_name' to '$destination' on remote '$dest_host'"
         zfs send $snap_name | pv | ssh $dest_host zfs recv -vu $destination
@@ -148,11 +148,16 @@ fi
 
 # check that destination pool exists
 if (( $(zpool list | grep $dest_pool | wc -l ) == 0 )); then
-    log "Error: destination pool \"$dest_pool\" does not exist"
-    if grep -q ":" <<< $dest_pool; then
-        log "Did you mean to specify ssh (-s)?"
+    log "zpool '$dest_pool' not found. Attempting to import"
+    zpool import $dest_pool
+
+    if (( $(zpool list | grep $dest_pool | wc -l ) == 0 )); then
+        log "Error: destination pool \"$dest_pool\" does not exist"
+        if grep -q ":" <<< $dest_pool; then
+            log "Did you mean to specify ssh (-s)?"
+        fi
+        exit
     fi
-    exit
 fi
 
 
@@ -167,3 +172,6 @@ else
     # do something if bookmark doesnt exist but destination dataset does
     init
 fi
+
+# export pool so the media can be removed
+zpool export $dest_pool

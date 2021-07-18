@@ -1,5 +1,5 @@
 #!/bin/bash
-# v0.8.0
+# v0.8.1
 
 # TODO: fall back from bookmarks to snapshot (get last snapshot form destination and search for it on source)
 # TODO: handle errors if refresh fails (wrong dest dataset for incremental send) (echo $? returns not 0)
@@ -26,6 +26,9 @@ Options
  -h, --help     Show help
  -v,            Enable verbose output. Only error messages will be sent unless this is specified
 "
+
+ssh=false
+verbose=false
 
 
 log(){
@@ -112,9 +115,6 @@ refresh() {
 
 
 
-
-ssh=false
-verbose=false
 
 while test $# -gt 0; do
     case "$1" in

@@ -1,5 +1,5 @@
 #!/bin/bash
-# v0.7.3
+# v0.8.0
 
 # TODO: fall back from bookmarks to snapshot (get last snapshot form destination and search for it on source)
 # TODO: handle errors if refresh fails (wrong dest dataset for incremental send) (echo $? returns not 0)
@@ -22,9 +22,9 @@ HELP="
 Uses ZFS send/recieve to sync a ZFS filesystem between source and destination\n
 $USAGE\n
 Options
- -s, --ssh      send stream to a destination over ssh
- -h, --help     show help
- -v,            enable verbose output
+ -s, --ssh      Send stream to a destination over ssh
+ -h, --help     Show help
+ -v,            Enable verbose output. Only error messages will be sent unless this is specified
 "
 
 
@@ -37,19 +37,39 @@ init() {
 
     if [ "$ssh" = true ]; then
         log "Sending '$snap_name' to '$destination' on remote '$dest_host'"
-        zfs send $snap_name | pv | ssh $dest_host zfs recv -vu $destination
+
+        if [ "$verbose" = true ]; then
+            zfs send -w $snap_name | pv | ssh $dest_host zfs recv -vu $destination
+        else
+            zfs send -w $snap_name | ssh $dest_host zfs recv -vu $destination
+        fi
     else
         log "Sending '$snap_name' to '$destination'"
-        zfs send $snap_name | pv | zfs recv -vu $destination
+
+        if [ "$verbose" = true ]; then
+            zfs send -w $snap_name | pv | zfs recv -vu $destination
+        else
+            zfs send -w $snap_name | zfs recv -vu $destination
+        fi
     fi
 
     # if the send command completely sucessfully
     if [ $? -eq 0 ]; then
+        # if bookmark already exists, delete it
+        if (( $(zfs list -t bookmark $source | grep $bookmark_name | wc -l) > 0 )); then
+            zfs destroy $bookmark_name
+        fi
+
         # convert the source snapshot to a bookmark for future incremental sends
         zfs bookmark $snap_name $bookmark_name
-    fi
 
-    zfs destroy $snap_name
+        # if snapshot => bookmark conversion succeeded
+        if [ $? -eq 0 ]; then
+            zfs destroy $snap_name
+        fi
+    else
+        zfs destroy $snap_name
+    fi
 }
 
 
@@ -58,10 +78,20 @@ refresh() {
 
     if [ "$ssh" = true ]; then
         log "Sending incremental snapshot '$snap_name' to '$destination' on remote '$dest_host'"
-        zfs send -i $bookmark_name $snap_name | pv | ssh $dest_host zfs recv -vFu $destination
+
+        if [ "$verbose" = true ]; then
+            zfs send -wi $bookmark_name $snap_name | pv | ssh $dest_host zfs recv -vFu $destination
+        else
+            zfs send -wi $bookmark_name $snap_name | ssh $dest_host zfs recv -vFu $destination
+        fi
     else
         log "Sending incremental snapshot '$snap_name' to '$destination'"
-        zfs send -i $bookmark_name $snap_name | pv | zfs recv -vFu $destination
+
+        if [ "$verbose" = true ]; then
+            zfs send -wi $bookmark_name $snap_name | pv | zfs recv -vFu $destination
+        else
+            zfs send -wi $bookmark_name $snap_name | zfs recv -vFu $destination
+        fi
     fi
 
     # if the send command completely sucessfully
@@ -81,18 +111,6 @@ refresh() {
 }
 
 
-
-
-# Check that required programs exist on machine
-if ! command -v zfs &> /dev/null; then
-    log "Error: zfs: command not found."
-    exit
-fi
-
-if ! command -v pv &> /dev/null; then
-    log "Error: pv: command not found."
-    exit
-fi
 
 
 ssh=false
@@ -117,6 +135,17 @@ while test $# -gt 0; do
             ;;
     esac
 done
+
+# Check that required programs exist on machine
+if ! command -v zfs &> /dev/null; then
+    log "Error: zfs: command not found."
+    exit
+fi
+
+if [ "$verbose" = true ] && ! command -v pv &> /dev/null; then
+    log "Error: pv: command not found."
+    exit
+fi
 
 
 # Check for required arguments

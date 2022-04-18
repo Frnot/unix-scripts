@@ -1,5 +1,7 @@
 #!/bin/bash
-# v0.8.1
+# v0.9.0b1
+
+# TODO - URGENT: support non wildcard destinations
 
 # TODO: fall back from bookmarks to snapshot (get last snapshot form destination and search for it on source)
 # TODO: handle errors if refresh fails (wrong dest dataset for incremental send) (echo $? returns not 0)
@@ -32,7 +34,7 @@ verbose=false
 
 
 log(){
-	printf "$1\n"
+        printf "$1\n"
 }
 
 init() {
@@ -114,6 +116,37 @@ refresh() {
 }
 
 
+check_dest() {
+    destination=$1
+
+    if [ "$verbose" = true ]; then echo "Checking destination: ${destination}"; fi
+
+    if [ "$ssh" = true ]; then
+        dest_host="${destination%:*}"
+        destination="${destination#*:}"
+    fi
+
+    dest_pool="${destination%%/*}"
+
+    # check that destination pool exists
+    if (( $(zpool list | grep $dest_pool | wc -l ) == 0 )); then
+        log "zpool '$dest_pool' not found. Attempting to import"
+        zpool import $dest_pool
+
+        if (( $(zpool list | grep $dest_pool | wc -l ) == 0 )); then
+            log "Error: destination pool \"$dest_pool\" does not exist"
+            if grep -q ":" <<< $dest_pool; then
+                log "Did you mean to specify ssh (-s)?"
+            fi
+            false; return
+        else
+            if [ "$verbose" = true ]; then echo "Destination: ${destination} found."; fi
+            true; return
+        fi
+    fi
+
+}
+
 
 
 while test $# -gt 0; do
@@ -159,15 +192,28 @@ elif (( $# < 2 )); then
     exit
 fi
 
-source=$1
-destination=$2
 
-if [ "$ssh" = true ]; then
-    dest_host="${destination%:*}"
-    destination="${destination#*:}"
+# Check for wildcard
+WILDCARD="*"
+arg2=$2
+if [[ "$arg2" == *"$WILDCARD"* ]]; then
+    if [ "$verbose" = true ]; then echo "Checking Wildcards"; fi
+
+    for SUB in 1 2 3 4 5
+    do
+        DEST="${arg2/"$WILDCARD"/"$SUB"}"
+
+        if check_dest $DEST
+        then
+            dest_pool="${DEST%%/*}"
+            break
+        fi
+    done
 fi
 
-dest_pool="${destination%%/*}"
+
+
+source=$1
 
 # check that source dataset exists
 if (( $(zfs list | grep $source | wc -l ) == 0 )); then
@@ -175,19 +221,6 @@ if (( $(zfs list | grep $source | wc -l ) == 0 )); then
     exit
 fi
 
-# check that destination pool exists
-if (( $(zpool list | grep $dest_pool | wc -l ) == 0 )); then
-    log "zpool '$dest_pool' not found. Attempting to import"
-    zpool import $dest_pool
-
-    if (( $(zpool list | grep $dest_pool | wc -l ) == 0 )); then
-        log "Error: destination pool \"$dest_pool\" does not exist"
-        if grep -q ":" <<< $dest_pool; then
-            log "Did you mean to specify ssh (-s)?"
-        fi
-        exit
-    fi
-fi
 
 
 snap_name="$source@backup_$DATETIME"

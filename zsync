@@ -1,7 +1,8 @@
 #!/bin/bash
-# v0.9.0b1
+# v0.9.1b1
 
 # TODO - URGENT: support non wildcard destinations
+# TODO: check for more destinations after syncing to the first drive
 
 # TODO: fall back from bookmarks to snapshot (get last snapshot form destination and search for it on source)
 # TODO: handle errors if refresh fails (wrong dest dataset for incremental send) (echo $? returns not 0)
@@ -196,19 +197,36 @@ fi
 # Check for wildcard
 WILDCARD="*"
 arg2=$2
-if [[ "$arg2" == *"$WILDCARD"* ]]; then
-    if [ "$verbose" = true ]; then echo "Checking Wildcards"; fi
+if [ "$ssh" = false ]; then
+    if [[ "$arg2" == *"$WILDCARD"* ]]; then
+        if [ "$verbose" = true ]; then echo "Checking Wildcards"; fi
 
-    for SUB in 1 2 3 4 5
-    do
-        DEST="${arg2/"$WILDCARD"/"$SUB"}"
+        for SUB in 1 2 3 4 5
+        do
+            DEST="${arg2/"$WILDCARD"/"$SUB"}"
 
-        if check_dest $DEST
+            if check_dest $DEST
+            then
+                dest_pool="${DEST%%/*}"
+                break
+            fi
+        done
+    else
+        if [ "$verbose" = true ]; then echo "Checking destination"; fi
+        if check_dest $arg2
         then
-            dest_pool="${DEST%%/*}"
-            break
+            dest_pool="${arg2%%/*}"
         fi
-    done
+    fi
+else
+    dest_host="${arg2%:*}"
+    destination="${arg2#*:}"
+    dest_pool="${destination%%/*}"
+
+    echo "FUCK YOU"
+    echo $dest_host
+    echo $destination
+    echo $dest_pool
 fi
 
 
@@ -237,3 +255,5 @@ fi
 
 # export pool so the media can be removed
 zpool export $dest_pool
+
+#TODO: send export over ssh

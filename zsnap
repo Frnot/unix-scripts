@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# v2.3
+# v2.4
 
 import datetime
 import getopt
@@ -7,7 +7,7 @@ import sys
 import os
 from os import system as cmd
 
-usage = """zsnap is a tool to assist automation of zfs snapshot creation.
+usage = """zsnap is a tool to assist automation of zfs snapshot creation and retention.
 
 Usage: zsnap <dataset> [option]
   or   zsnap <dataset> <last> <minutely> <hourly> <daily> <weekly> <monthly> <yearly> [option]
@@ -30,19 +30,19 @@ Options
 
 help = """
 keep last <N>
-    Keep the last <N> backup snapshots.
+    Keep the last <N> snapshots, in addition to the following retention settings.
 keep minutely <N>
-    Keep backups for the last <N> hours. If there is more than one backup for a single hour, only the latest is kept.
+    Keep snapshots for the last <N> minutes. If there is more than one snapshot for a single minute, only the latest is kept.
 keep hourly <N>
-    Keep backups for the last <N> hours. If there is more than one backup for a single hour, only the latest is kept.
+    Keep snapshots for the last <N> hours. If there is more than one snapshot for a single hour, only the latest is kept.
 keep daily <N>
-    Keep backups for the last <N> days. If there is more than one backup for a single day, only the latest is kept.
+    Keep snapshots for the last <N> days. If there is more than one snapshot for a single day, only the latest is kept.
 keep weekly <N>
-    Keep backups for the last <N> weeks. If there is more than one backup for a single week, only the latest is kept.
+    Keep snapshots for the last <N> weeks. If there is more than one snapshot for a single week, only the latest is kept.
 keep monthly <N>
-    Keep backups for the last <N> months. If there is more than one backup for a single month, only the latest is kept.
+    Keep snapshots for the last <N> months. If there is more than one snapshot for a single month, only the latest is kept.
 keep yearly <N>
-    Keep backups for the last <N> years. If there is more than one backup for a single year, only the latest is kept."""
+    Keep snapshots for the last <N> years. If there is more than one snapshot for a single year, only the latest is kept."""
 
 
 verbose = False

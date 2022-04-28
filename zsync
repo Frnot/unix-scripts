@@ -1,259 +1,263 @@
-#!/bin/bash
-# v0.9.1b1
+#!/usr/bin/env python3
 
-# TODO - URGENT: support non wildcard destinations
-# TODO: check for more destinations after syncing to the first drive
+# v1.0.0b5
 
-# TODO: fall back from bookmarks to snapshot (get last snapshot form destination and search for it on source)
+# TODO: get away from using 'shell=True' for send/recv
+# TODO: handle keyboard interrupts correctly (kill the subprocess so there isn't an orphaned shell/process)
+# TODO: implement resuming
+# TODO: fall back from bookmarks to snapshot (get last snapshot from destination and search for it on source)
+
 # TODO: handle errors if refresh fails (wrong dest dataset for incremental send) (echo $? returns not 0)
 ## ex error: cannot receive incremental stream: most recent snapshot of edrive2/test does not match incremental source
 ## use an older snapshot of edrive2/test if it exists
 ## or (use -f to overwrite anyway)
+
+
+# Low Prior
+# TODO: check for more destinations after syncing to the first drive
 # TODO: add ssh source support (if zfs supports it)
-# TODO: add resume support
 
-BOOKMARK_SUFFIX="zsync_incremental"
-DATETIME=$(date +"%Y_%m_%d__%H_%M_%S")
 
-USAGE=$(cat <<-END
+import argparse
+import datetime
+from shutil import which
+import subprocess
+
+
+
+usage = """
+Uses ZFS send/recieve to sync a ZFS filesystem between source and destination\n
+
 Usage: zsync [OPTION] <source dataset> <destination dataset>
  or    zsync <-s | -ssh> <source dataset> [<USER>@]<HOST>:<destination dataset>
-END
-)
-
-HELP="
-Uses ZFS send/recieve to sync a ZFS filesystem between source and destination\n
-$USAGE\n
-Options
- -s, --ssh      Send stream to a destination over ssh
- -h, --help     Show help
- -v,            Enable verbose output. Only error messages will be sent unless this is specified
-"
-
-ssh=false
-verbose=false
+"""
 
 
-log(){
-        printf "$1\n"
-}
-
-init() {
-    zfs snapshot $snap_name
-
-    if [ "$ssh" = true ]; then
-        log "Sending '$snap_name' to '$destination' on remote '$dest_host'"
-
-        if [ "$verbose" = true ]; then
-            zfs send -w $snap_name | pv | ssh $dest_host zfs recv -vu $destination
-        else
-            zfs send -w $snap_name | ssh $dest_host zfs recv -vu $destination
-        fi
-    else
-        log "Sending '$snap_name' to '$destination'"
-
-        if [ "$verbose" = true ]; then
-            zfs send -w $snap_name | pv | zfs recv -vu $destination
-        else
-            zfs send -w $snap_name | zfs recv -vu $destination
-        fi
-    fi
-
-    # if the send command completely sucessfully
-    if [ $? -eq 0 ]; then
-        # if bookmark already exists, delete it
-        if (( $(zfs list -t bookmark $source | grep $bookmark_name | wc -l) > 0 )); then
-            zfs destroy $bookmark_name
-        fi
-
-        # convert the source snapshot to a bookmark for future incremental sends
-        zfs bookmark $snap_name $bookmark_name
-
-        # if snapshot => bookmark conversion succeeded
-        if [ $? -eq 0 ]; then
-            zfs destroy $snap_name
-        fi
-    else
-        zfs destroy $snap_name
-    fi
-}
+bookmark_suffix = "zsync_incremental"
+date_time = datetime.datetime.now().strftime("%Y%m%d::%H:%M:%S")
+ssh=False
+verbose=False
 
 
-refresh() {
-    zfs snapshot $snap_name
 
-    if [ "$ssh" = true ]; then
-        log "Sending incremental snapshot '$snap_name' to '$destination' on remote '$dest_host'"
+def main():
+    # TODO: get arguments
+    parser = argparse.ArgumentParser(description = usage, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("source_dataset")
+    parser.add_argument("destination_dataset")
 
-        if [ "$verbose" = true ]; then
-            zfs send -wi $bookmark_name $snap_name | pv | ssh $dest_host zfs recv -vFu $destination
-        else
-            zfs send -wi $bookmark_name $snap_name | ssh $dest_host zfs recv -vFu $destination
-        fi
-    else
-        log "Sending incremental snapshot '$snap_name' to '$destination'"
+    parser.add_argument("-s", "--ssh", dest="ssh", action="store_true", help="Send stream to a destination over ssh")
+    parser.add_argument("-v", dest="verbose", action="store_true", help="Enable verbose output. Only error messages will be sent unless this is specified")
 
-        if [ "$verbose" = true ]; then
-            zfs send -wi $bookmark_name $snap_name | pv | zfs recv -vFu $destination
-        else
-            zfs send -wi $bookmark_name $snap_name | zfs recv -vFu $destination
-        fi
-    fi
+    args = parser.parse_args()
 
-    # if the send command completely sucessfully
-    if [ $? -eq 0 ]; then
-        # convert the source snapshot to a bookmark for future incremental sends (overwrite previous bookmark)
-        zfs destroy $bookmark_name
-        zfs bookmark $snap_name $bookmark_name
-
-        # only save most recent snapshot on destination
-        zfs list -t snapshot $destination | tail -n +2 | awk '{print $1}' | head -n -1 | xargs -I snap zfs destroy snap
-    else
-        log "Error: ZFS send failed."
-    fi
-
-    # delete the snapshot that was used for the source
-    zfs destroy $snap_name
-}
+    source = args.source_dataset
+    destination = args.destination_dataset
+    global ssh
+    #ssh = args.ssh
+    global verbose
+    verbose = args.verbose
+    dest_host = None
 
 
-check_dest() {
-    destination=$1
+    # Check that required programs exist on machine
+    if which("zfs") is None:
+        log("Error: zfs: command not found.")
+        exit(2)
 
-    if [ "$verbose" = true ]; then echo "Checking destination: ${destination}"; fi
+    if verbose and which("pv") is None:
+        log("Error: pv: command not found.")
+        exit(2)
 
-    if [ "$ssh" = true ]; then
-        dest_host="${destination%:*}"
-        destination="${destination#*:}"
-    fi
+    # Check for wildcard
+    wildcard="*"
+    if ssh:
+        if wildcard in destination:
+            log("Error: wildcards are not supported with remote ssh destinations")
+            exit(2)
+        else:
+            dest_host = destination.split(":")[0]
+            destination = destination.split(":")[1]
+            # TODO: validate ssh host pool (and support wildcards)
+            dest_pool = destination.split("/")[0]
+    else:
+        if wildcard in destination:
+            if verbose: print("Checking Wildcards")
+            for n in range (10):
+                dest = destination.replace(wildcard, n)
+                if check_dest(dest):
+                    dest_pool = destination.split("/")[0]
+                    break
+            log("Error: found no valid pool with wildcard substitution")
+            exit(2)
+        else:
+            if check_dest(destination):
+                dest_pool = destination.split("/")[0]
+            else:
+                log("Error: pool does not exist")
+                exit(2)
 
-    dest_pool="${destination%%/*}"
+
+
+
+    # check that source dataset exists
+    if dest_pool not in execute("zpool list"):
+        log(f"Error: source dataset '{source}' does not exist")
+        exit(2)
+
+
+    snap_name = f"{source}@backup_{date_time}"
+    bookmark_name = f"{source}#{dest_pool}-{bookmark_suffix}"
+
+    # if last bookmark and destination dataset exist
+    bookmark_exists = bookmark_name in execute(f"zfs list -t bookmark {source}")
+    destination_dataset_exists = destination in execute(f"zfs list -r {dest_pool} -o name")
+
+    if bookmark_exists and destination_dataset_exists:
+        refresh(source, dest_host, destination, snap_name, bookmark_name)
+    else:
+        # add verbose output - reason for init
+        # do something if bookmark doesnt exist but destination dataset does
+        init(source, dest_host, destination, snap_name, bookmark_name)
+
+
+    # export pool so the media can be removed
+    execute(f"zpool export {dest_pool}")
+    #TODO: send export over ssh
+
+
+
+
+def check_dest(destination):
+    dest_pool = destination.split("/")[0]
+
+    if verbose: print(f"Checking pool '{dest_pool}' for destination: {destination}")
 
     # check that destination pool exists
-    if (( $(zpool list | grep $dest_pool | wc -l ) == 0 )); then
-        log "zpool '$dest_pool' not found. Attempting to import"
-        zpool import $dest_pool
+    if dest_pool not in execute("zpool list"):
+        log(f"zpool '{dest_pool}' not found. Attempting to import")
 
-        if (( $(zpool list | grep $dest_pool | wc -l ) == 0 )); then
-            log "Error: destination pool \"$dest_pool\" does not exist"
-            if grep -q ":" <<< $dest_pool; then
-                log "Did you mean to specify ssh (-s)?"
-            fi
-            false; return
-        else
-            if [ "$verbose" = true ]; then echo "Destination: ${destination} found."; fi
-            true; return
-        fi
-    fi
+        execute(f"zpool import {dest_pool}")
 
-}
+        if dest_pool not in execute("zpool list"):
+            log(f"Error: destination pool '{dest_pool}' does not exist")
+            if ":" in dest_pool:
+                log("Did you mean to specify ssh (-s)?")
+            return False
+    else:
+        if verbose: log(f"Note: zpool '{dest_pool}' was already mounted")
+    if verbose: log(f"Destination: {destination} found.")
+    return True
 
 
 
-while test $# -gt 0; do
-    case "$1" in
-        -h|--help)
-            log "$HELP"
-            exit
-            ;;
-        -v)
-            verbose=true
-            shift
-            ;;
-        -s|--ssh)
-            ssh=true
-            shift
-            ;;
-        *)
-            break
-            ;;
-    esac
-done
 
-# Check that required programs exist on machine
-if ! command -v zfs &> /dev/null; then
-    log "Error: zfs: command not found."
-    exit
-fi
+def init(source, dest_host, destination, snap_name, bookmark_name):
+    execute(f"zfs snapshot {snap_name}")
 
-if [ "$verbose" = true ] && ! command -v pv &> /dev/null; then
-    log "Error: pv: command not found."
-    exit
-fi
+    if ssh:
+        log(f"Sending '{snap_name}' to '{destination}' on remote '{dest_host}'")
 
+        if verbose:
+            cmdstr = f"zfs send -w {snap_name} | pv | ssh {dest_host} zfs recv -vu {destination}"
+            pipe = subprocess.Popen(cmdstr, shell=True, stdout=subprocess.PIPE)
+            for line in pipe.stdout:
+                print(line)
+        else:
+            cmdstr = f"zfs send -w {snap_name} | ssh {dest_host} zfs recv -vu {destination}"
+            pipe = subprocess.Popen(cmdstr, shell=True)
+    else:
+        log(f"Sending '{snap_name}' to '{destination}'")
 
-# Check for required arguments
-if (( $# < 1 )); then
-    log "Error: missing source argument."
-    log "$USAGE"
-    exit
-elif (( $# < 2 )); then
-    log "Error: missing destination argument."
-    log "$USAGE"
-    exit
-fi
+        if verbose:
+            rc = executeout(f"zfs send -w {snap_name} | pv | zfs recv -vu {destination}")
+        else:
+            rc = executeout(f"zfs send -w {snap_name} | pv | zfs recv -vu {destination}", quiet=True)
 
+    # if the send command completely sucessfully
+    command_success = rc == 0
 
-# Check for wildcard
-WILDCARD="*"
-arg2=$2
-if [ "$ssh" = false ]; then
-    if [[ "$arg2" == *"$WILDCARD"* ]]; then
-        if [ "$verbose" = true ]; then echo "Checking Wildcards"; fi
+    if command_success:
+        # if bookmark already exists, delete it
+        if bookmark_name in execute(f"zfs list -t bookmark {source}"):
+            execute(f"zfs destroy {bookmark_name}")
 
-        for SUB in 1 2 3 4 5
-        do
-            DEST="${arg2/"$WILDCARD"/"$SUB"}"
+        # convert the source snapshot to a bookmark for future incremental sends
+        rc = execute(f"zfs bookmark {snap_name} {bookmark_name}", return_rc=True)
 
-            if check_dest $DEST
-            then
-                dest_pool="${DEST%%/*}"
-                break
-            fi
-        done
-    else
-        if [ "$verbose" = true ]; then echo "Checking destination"; fi
-        if check_dest $arg2
-        then
-            dest_pool="${arg2%%/*}"
-        fi
-    fi
-else
-    dest_host="${arg2%:*}"
-    destination="${arg2#*:}"
-    dest_pool="${destination%%/*}"
-
-    echo "FUCK YOU"
-    echo $dest_host
-    echo $destination
-    echo $dest_pool
-fi
+        # if snapshot => bookmark conversion succeeded
+        if rc == 0:
+            execute(f"zfs destroy {snap_name}")
+    else: # if the command failed, delete the orphaned snapshot
+        execute(f"zfs destroy {snap_name}")
 
 
 
-source=$1
-
-# check that source dataset exists
-if (( $(zfs list | grep $source | wc -l ) == 0 )); then
-    log "Error: source dataset \"$source\" does not exist"
-    exit
-fi
 
 
+def refresh(source, dest_host, destination, snap_name, bookmark_name):
+    execute(f"zfs snapshot {snap_name}")
 
-snap_name="$source@backup_$DATETIME"
-bookmark_name="$source#$dest_pool-$BOOKMARK_SUFFIX"
+    if ssh:
+        log(f"Sending incremental snapshot '{snap_name}' to '{destination}' on remote '{dest_host}'")
 
-# if last bookmark and destination dataset exist
-if (( $(zfs list -t bookmark $source | grep $bookmark_name | wc -l) > 0 )) && (( $(zfs list -r $dest_pool -o name | grep $destination | wc -l) > 0 )); then
-    refresh
-else
-    # add verbose output - reason for init
-    # do something if bookmark doesnt exist but destination dataset does
-    init
-fi
+        if verbose:
+            cmdstr = f"zfs send -wi {bookmark_name} {snap_name} | pv | ssh {dest_host} zfs recv -vFu {destination}"
+            pipe = subprocess.Popen(cmdstr, shell=True, stdout=subprocess.PIPE)
+            for line in pipe.stdout:
+                print(line)
+        else:
+            cmdstr = f"zfs send -wi {bookmark_name} {snap_name} | ssh {dest_host} zfs recv -vFu {destination}"
+            pipe = subprocess.Popen(cmdstr, shell=True, stdout=subprocess.PIPE)
+    else:
+        log(f"Sending incremental snapshot '{snap_name}' to '{destination}'")
 
-# export pool so the media can be removed
-zpool export $dest_pool
+        if verbose:
+            rc = executeout(f"zfs send -wi {bookmark_name} {snap_name} | pv | zfs recv -vFu {destination}", quiet=True)
+        else:
+            rc = executeout(f"zfs send -wi {bookmark_name} {snap_name} | zfs recv -vFu {destination}", quiet=True)
 
-#TODO: send export over ssh
+
+    # if the send command completely sucessfully
+    command_success = rc == 0
+    if command_success:
+        # convert the source snapshot to a bookmark for future incremental sends (overwrite previous bookmark)
+        execute(f"zfs destroy {bookmark_name}")
+        execute(f"zfs bookmark {snap_name} {bookmark_name}")
+
+        # only save most recent snapshot on destination
+        snaplist = execute(f"zfs list -t snapshot {destination}").splitlines() # Get list of snapshots for destination
+        del snaplist[0] # remove header from list
+        del snaplist[0] # remove latest snapshot from list
+        purgelist = [snap.split()[0] for snap in snaplist] # format list to only contain snapshot paths
+        for snap in purgelist: # delete snapshots remaining on list
+            execute(f"zfs destroy {snap}")
+
+    else:
+        log("Error: ZFS send failed.")
+
+
+    # delete the snapshot that was used for the source
+    execute(f"zfs destroy {snap_name}")
+
+
+def execute(command, return_rc=False):
+    cmdarr = command.split()
+    result = subprocess.run(cmdarr, text=True, capture_output=True)
+    if return_rc:
+        return result.returncode
+    else:
+        return result.stdout
+
+def executeout(command, quiet=False):
+    pipe = subprocess.Popen(command, shell=True, encoding='utf-8', stdout=subprocess.PIPE)
+    if not quiet:
+        while pipe.poll() is None:
+            log(pipe.stdout.readline())
+    else: pipe.wait()
+    return pipe.returncode
+
+def log(message):
+    print(message)
+
+main()

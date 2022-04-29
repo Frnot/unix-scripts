@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-# v1.0.0b5
+# v1.0.0b6
 
 # TODO: get away from using 'shell=True' for send/recv
 # TODO: handle keyboard interrupts correctly (kill the subprocess so there isn't an orphaned shell/process)
@@ -24,7 +24,6 @@ from shutil import which
 import subprocess
 
 
-
 usage = """
 Uses ZFS send/recieve to sync a ZFS filesystem between source and destination\n
 
@@ -35,30 +34,41 @@ Usage: zsync [OPTION] <source dataset> <destination dataset>
 
 bookmark_suffix = "zsync_incremental"
 date_time = datetime.datetime.now().strftime("%Y%m%d::%H:%M:%S")
-ssh=False
-verbose=False
-
+ssh = False
+verbose = False
 
 
 def main():
     # TODO: get arguments
-    parser = argparse.ArgumentParser(description = usage, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = argparse.ArgumentParser(
+        description=usage, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     parser.add_argument("source_dataset")
     parser.add_argument("destination_dataset")
 
-    parser.add_argument("-s", "--ssh", dest="ssh", action="store_true", help="Send stream to a destination over ssh")
-    parser.add_argument("-v", dest="verbose", action="store_true", help="Enable verbose output. Only error messages will be sent unless this is specified")
+    parser.add_argument(
+        "-s",
+        "--ssh",
+        dest="ssh",
+        action="store_true",
+        help="Send stream to a destination over ssh",
+    )
+    parser.add_argument(
+        "-v",
+        dest="verbose",
+        action="store_true",
+        help="Enable verbose output. Only error messages will be sent unless this is specified",
+    )
 
     args = parser.parse_args()
 
     source = args.source_dataset
     destination = args.destination_dataset
     global ssh
-    #ssh = args.ssh
+    # ssh = args.ssh
     global verbose
     verbose = args.verbose
     dest_host = None
-
 
     # Check that required programs exist on machine
     if which("zfs") is None:
@@ -70,7 +80,7 @@ def main():
         exit(2)
 
     # Check for wildcard
-    wildcard="*"
+    wildcard = "*"
     if ssh:
         if wildcard in destination:
             log("Error: wildcards are not supported with remote ssh destinations")
@@ -82,8 +92,10 @@ def main():
             dest_pool = destination.split("/")[0]
     else:
         if wildcard in destination:
-            if verbose: print("Checking Wildcards")
-            for n in range (10):
+            if verbose:
+                print("Checking Wildcards")
+
+            for n in range(10):
                 dest = destination.replace(wildcard, n)
                 if check_dest(dest):
                     dest_pool = destination.split("/")[0]
@@ -97,41 +109,47 @@ def main():
                 log("Error: pool does not exist")
                 exit(2)
 
-
-
-
     # check that source dataset exists
-    if dest_pool not in execute("zpool list"):
+    if source not in execute("zpool list"):
         log(f"Error: source dataset '{source}' does not exist")
         exit(2)
-
 
     snap_name = f"{source}@backup_{date_time}"
     bookmark_name = f"{source}#{dest_pool}-{bookmark_suffix}"
 
     # if last bookmark and destination dataset exist
     bookmark_exists = bookmark_name in execute(f"zfs list -t bookmark {source}")
-    destination_dataset_exists = destination in execute(f"zfs list -r {dest_pool} -o name")
+    dest_dataset_exists = destination in execute(f"zfs list -r {dest_pool} -o name")
 
-    if bookmark_exists and destination_dataset_exists:
-        refresh(source, dest_host, destination, snap_name, bookmark_name)
+    if dest_dataset_exists:
+        if bookmark_exists:
+            refresh(source, dest_host, destination, snap_name, bookmark_name)
+        # elif: # TODO - lp: see if a snapshot '@backup' exists, see if it will work
+        else:
+            log(
+                f"Error: dataset '{destination}' exists but no differential information"
+                + " is available (bookmark missing)\nSyncing entire dataset"
+            )
+            init(source, dest_host, destination, snap_name, bookmark_name)
     else:
-        # add verbose output - reason for init
-        # do something if bookmark doesnt exist but destination dataset does
-        init(source, dest_host, destination, snap_name, bookmark_name)
+        if bookmark_exists:
+            log(f"Bookmark '{bookmark_name}' exists but its dataset is missing")
+            log("Destroying bookmark")
+            execute(f"zfs destroy {bookmark_name}")
 
+        log(f"")
+        init(source, dest_host, destination, snap_name, bookmark_name)
 
     # export pool so the media can be removed
     execute(f"zpool export {dest_pool}")
-    #TODO: send export over ssh
-
-
+    # TODO: send export over ssh
 
 
 def check_dest(destination):
     dest_pool = destination.split("/")[0]
 
-    if verbose: print(f"Checking pool '{dest_pool}' for destination: {destination}")
+    if verbose:
+        print(f"Checking pool '{dest_pool}' for destination: {destination}")
 
     # check that destination pool exists
     if dest_pool not in execute("zpool list"):
@@ -145,11 +163,12 @@ def check_dest(destination):
                 log("Did you mean to specify ssh (-s)?")
             return False
     else:
-        if verbose: log(f"Note: zpool '{dest_pool}' was already mounted")
-    if verbose: log(f"Destination: {destination} found.")
+        if verbose:
+            log(f"Note: zpool '{dest_pool}' was already mounted")
+
+    if verbose:
+        log(f"Destination: {destination} found.")
     return True
-
-
 
 
 def init(source, dest_host, destination, snap_name, bookmark_name):
@@ -164,15 +183,21 @@ def init(source, dest_host, destination, snap_name, bookmark_name):
             for line in pipe.stdout:
                 print(line)
         else:
-            cmdstr = f"zfs send -w {snap_name} | ssh {dest_host} zfs recv -vu {destination}"
+            cmdstr = (
+                f"zfs send -w {snap_name} | ssh {dest_host} zfs recv -vu {destination}"
+            )
             pipe = subprocess.Popen(cmdstr, shell=True)
     else:
         log(f"Sending '{snap_name}' to '{destination}'")
 
         if verbose:
-            rc = executeout(f"zfs send -w {snap_name} | pv | zfs recv -vu {destination}")
+            rc = executeout(
+                f"zfs send -w {snap_name} | pv | zfs recv -vu {destination}"
+            )
         else:
-            rc = executeout(f"zfs send -w {snap_name} | pv | zfs recv -vu {destination}", quiet=True)
+            rc = executeout(
+                f"zfs send -w {snap_name} | pv | zfs recv -vu {destination}", quiet=True
+            )
 
     # if the send command completely sucessfully
     command_success = rc == 0
@@ -188,18 +213,17 @@ def init(source, dest_host, destination, snap_name, bookmark_name):
         # if snapshot => bookmark conversion succeeded
         if rc == 0:
             execute(f"zfs destroy {snap_name}")
-    else: # if the command failed, delete the orphaned snapshot
+    else:  # if the command failed, delete the orphaned snapshot
         execute(f"zfs destroy {snap_name}")
-
-
-
 
 
 def refresh(source, dest_host, destination, snap_name, bookmark_name):
     execute(f"zfs snapshot {snap_name}")
 
     if ssh:
-        log(f"Sending incremental snapshot '{snap_name}' to '{destination}' on remote '{dest_host}'")
+        log(
+            f"Sending incremental snapshot '{snap_name}' to '{destination}' on remote '{dest_host}'"
+        )
 
         if verbose:
             cmdstr = f"zfs send -wi {bookmark_name} {snap_name} | pv | ssh {dest_host} zfs recv -vFu {destination}"
@@ -213,10 +237,15 @@ def refresh(source, dest_host, destination, snap_name, bookmark_name):
         log(f"Sending incremental snapshot '{snap_name}' to '{destination}'")
 
         if verbose:
-            rc = executeout(f"zfs send -wi {bookmark_name} {snap_name} | pv | zfs recv -vFu {destination}", quiet=True)
+            rc = executeout(
+                f"zfs send -wi {bookmark_name} {snap_name} | pv | zfs recv -vFu {destination}",
+                quiet=True,
+            )
         else:
-            rc = executeout(f"zfs send -wi {bookmark_name} {snap_name} | zfs recv -vFu {destination}", quiet=True)
-
+            rc = executeout(
+                f"zfs send -wi {bookmark_name} {snap_name} | zfs recv -vFu {destination}",
+                quiet=True,
+            )
 
     # if the send command completely sucessfully
     command_success = rc == 0
@@ -226,16 +255,19 @@ def refresh(source, dest_host, destination, snap_name, bookmark_name):
         execute(f"zfs bookmark {snap_name} {bookmark_name}")
 
         # only save most recent snapshot on destination
-        snaplist = execute(f"zfs list -t snapshot {destination}").splitlines() # Get list of snapshots for destination
-        del snaplist[0] # remove header from list
-        del snaplist[0] # remove latest snapshot from list
-        purgelist = [snap.split()[0] for snap in snaplist] # format list to only contain snapshot paths
-        for snap in purgelist: # delete snapshots remaining on list
+        snaplist = execute(
+            f"zfs list -t snapshot {destination}"
+        ).splitlines()  # Get list of snapshots for destination
+        del snaplist[0]  # remove header from list
+        del snaplist[0]  # remove latest snapshot from list
+        purgelist = [
+            snap.split()[0] for snap in snaplist
+        ]  # format list to only contain snapshot paths
+        for snap in purgelist:  # delete snapshots remaining on list
             execute(f"zfs destroy {snap}")
 
     else:
         log("Error: ZFS send failed.")
-
 
     # delete the snapshot that was used for the source
     execute(f"zfs destroy {snap_name}")
@@ -249,15 +281,21 @@ def execute(command, return_rc=False):
     else:
         return result.stdout
 
+
 def executeout(command, quiet=False):
-    pipe = subprocess.Popen(command, shell=True, encoding='utf-8', stdout=subprocess.PIPE)
+    pipe = subprocess.Popen(
+        command, shell=True, encoding="utf-8", stdout=subprocess.PIPE
+    )
     if not quiet:
         while pipe.poll() is None:
             log(pipe.stdout.readline())
-    else: pipe.wait()
+    else:
+        pipe.wait()
     return pipe.returncode
+
 
 def log(message):
     print(message)
+
 
 main()

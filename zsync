@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-# v1.2.10b
+version = "1.2.11b"
 
 # TODO: handle errors if refresh fails (wrong dest dataset for incremental send) (echo $? returns not 0)
 ## ex error: cannot receive incremental stream: most recent snapshot of edrive2/test does not match incremental source
@@ -25,7 +25,8 @@ import subprocess
 import sys
 
 
-usage = """
+usage = f"""
+zsync version: {version}
 Uses ZFS send/receive to sync a ZFS filesystem between source and destination\n
 
 Usage: zsync [OPTION] <source dataset> <destination dataset>
@@ -60,6 +61,13 @@ def main():
         dest="verbose",
         action="store_true",
         help="Enable verbose debug output",
+    )
+    parser.add_argument(
+        "--version",
+        dest="version_query",
+        action="version",
+        version=f"zsync version: {version}",
+        help="Print zsync version",
     )
 
     args = parser.parse_args()

@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
 
-# v1.0.0b6
-
-# TODO: get away from using 'shell=True' for send/recv
-# TODO: handle keyboard interrupts correctly (kill the subprocess so there isn't an orphaned shell/process)
-# TODO: implement resuming
-# TODO: fall back from bookmarks to snapshot (get last snapshot from destination and search for it on source)
+# v1.2.10b
 
 # TODO: handle errors if refresh fails (wrong dest dataset for incremental send) (echo $? returns not 0)
 ## ex error: cannot receive incremental stream: most recent snapshot of edrive2/test does not match incremental source
 ## use an older snapshot of edrive2/test if it exists
 ## or (use -f to overwrite anyway)
 
+# TODO: handle keyboard interrupts correctly (kill the subprocess so there isn't an orphaned shell/process)
+# TODO: re-implement SSH support
+
+# TODO: implement resuming
+# TODO: fall back from bookmarks to snapshot (get last snapshot from destination and search for it on source)
 
 # Low Prior
 # TODO: check for more destinations after syncing to the first drive
@@ -22,10 +22,11 @@ import argparse
 import datetime
 from shutil import which
 import subprocess
+import sys
 
 
 usage = """
-Uses ZFS send/recieve to sync a ZFS filesystem between source and destination\n
+Uses ZFS send/receive to sync a ZFS filesystem between source and destination\n
 
 Usage: zsync [OPTION] <source dataset> <destination dataset>
  or    zsync <-s | -ssh> <source dataset> [<USER>@]<HOST>:<destination dataset>
@@ -33,9 +34,10 @@ Usage: zsync [OPTION] <source dataset> <destination dataset>
 
 
 bookmark_suffix = "zsync_incremental"
-date_time = datetime.datetime.now().strftime("%Y%m%d::%H:%M:%S")
+date_time = datetime.datetime.now().strftime("%Y%m%d__%H_%M_%S")
 ssh = False
 verbose = False
+quiet = not sys.stdout.isatty()
 
 
 def main():
@@ -57,7 +59,7 @@ def main():
         "-v",
         dest="verbose",
         action="store_true",
-        help="Enable verbose output. Only error messages will be sent unless this is specified",
+        help="Enable verbose debug output",
     )
 
     args = parser.parse_args()
@@ -75,10 +77,6 @@ def main():
         log("Error: zfs: command not found.")
         exit(2)
 
-    if verbose and which("pv") is None:
-        log("Error: pv: command not found.")
-        exit(2)
-
     # Check for wildcard
     wildcard = "*"
     if ssh:
@@ -92,16 +90,21 @@ def main():
             dest_pool = destination.split("/")[0]
     else:
         if wildcard in destination:
-            if verbose:
-                print("Checking Wildcards")
+            vlog("Checking Wildcards")
 
+            found = False
             for n in range(10):
-                dest = destination.replace(wildcard, n)
-                if check_dest(dest):
+                desttest = destination.replace(wildcard, str(n))
+                if check_dest(desttest):
+                    destination = desttest
                     dest_pool = destination.split("/")[0]
+                    found = True
                     break
-            log("Error: found no valid pool with wildcard substitution")
-            exit(2)
+            if not found:
+                log("Error: found no valid pool with wildcard substitution")
+                if ":" in destination:
+                    log("Did you mean to specify ssh (-s)?")
+                exit(2)
         else:
             if check_dest(destination):
                 dest_pool = destination.split("/")[0]
@@ -110,7 +113,7 @@ def main():
                 exit(2)
 
     # check that source dataset exists
-    if source not in execute("zpool list"):
+    if source not in execute("zfs list"):
         log(f"Error: source dataset '{source}' does not exist")
         exit(2)
 
@@ -148,8 +151,7 @@ def main():
 def check_dest(destination):
     dest_pool = destination.split("/")[0]
 
-    if verbose:
-        print(f"Checking pool '{dest_pool}' for destination: {destination}")
+    vlog(f"Checking pool '{dest_pool}' for destination: {destination}")
 
     # check that destination pool exists
     if dest_pool not in execute("zpool list"):
@@ -158,51 +160,24 @@ def check_dest(destination):
         execute(f"zpool import {dest_pool}")
 
         if dest_pool not in execute("zpool list"):
-            log(f"Error: destination pool '{dest_pool}' does not exist")
-            if ":" in dest_pool:
-                log("Did you mean to specify ssh (-s)?")
+            vlog(f"Error: destination pool '{dest_pool}' does not exist")
             return False
     else:
-        if verbose:
-            log(f"Note: zpool '{dest_pool}' was already mounted")
+        log(f"Note: zpool '{dest_pool}' was already mounted")
 
-    if verbose:
-        log(f"Destination: {destination} found.")
+    log(f"Destination: {destination} found.")
     return True
 
 
 def init(source, dest_host, destination, snap_name, bookmark_name):
     execute(f"zfs snapshot {snap_name}")
+    log(f"Performing full backup of {source}")
 
-    if ssh:
-        log(f"Sending '{snap_name}' to '{destination}' on remote '{dest_host}'")
-
-        if verbose:
-            cmdstr = f"zfs send -w {snap_name} | pv | ssh {dest_host} zfs recv -vu {destination}"
-            pipe = subprocess.Popen(cmdstr, shell=True, stdout=subprocess.PIPE)
-            for line in pipe.stdout:
-                print(line)
-        else:
-            cmdstr = (
-                f"zfs send -w {snap_name} | ssh {dest_host} zfs recv -vu {destination}"
-            )
-            pipe = subprocess.Popen(cmdstr, shell=True)
-    else:
-        log(f"Sending '{snap_name}' to '{destination}'")
-
-        if verbose:
-            rc = executeout(
-                f"zfs send -w {snap_name} | pv | zfs recv -vu {destination}"
-            )
-        else:
-            rc = executeout(
-                f"zfs send -w {snap_name} | pv | zfs recv -vu {destination}", quiet=True
-            )
+    log(f"Sending '{snap_name}' to '{destination}'")
+    success = send_recv(snap_name, None, destination)
 
     # if the send command completely sucessfully
-    command_success = rc == 0
-
-    if command_success:
+    if success:
         # if bookmark already exists, delete it
         if bookmark_name in execute(f"zfs list -t bookmark {source}"):
             execute(f"zfs destroy {bookmark_name}")
@@ -220,36 +195,11 @@ def init(source, dest_host, destination, snap_name, bookmark_name):
 def refresh(source, dest_host, destination, snap_name, bookmark_name):
     execute(f"zfs snapshot {snap_name}")
 
-    if ssh:
-        log(
-            f"Sending incremental snapshot '{snap_name}' to '{destination}' on remote '{dest_host}'"
-        )
-
-        if verbose:
-            cmdstr = f"zfs send -wi {bookmark_name} {snap_name} | pv | ssh {dest_host} zfs recv -vFu {destination}"
-            pipe = subprocess.Popen(cmdstr, shell=True, stdout=subprocess.PIPE)
-            for line in pipe.stdout:
-                print(line)
-        else:
-            cmdstr = f"zfs send -wi {bookmark_name} {snap_name} | ssh {dest_host} zfs recv -vFu {destination}"
-            pipe = subprocess.Popen(cmdstr, shell=True, stdout=subprocess.PIPE)
-    else:
-        log(f"Sending incremental snapshot '{snap_name}' to '{destination}'")
-
-        if verbose:
-            rc = executeout(
-                f"zfs send -wi {bookmark_name} {snap_name} | pv | zfs recv -vFu {destination}",
-                quiet=True,
-            )
-        else:
-            rc = executeout(
-                f"zfs send -wi {bookmark_name} {snap_name} | zfs recv -vFu {destination}",
-                quiet=True,
-            )
+    log(f"Sending incremental snapshot '{snap_name}' to '{destination}'")
+    success = send_recv(snap_name, bookmark_name, destination)
 
     # if the send command completely sucessfully
-    command_success = rc == 0
-    if command_success:
+    if success:
         # convert the source snapshot to a bookmark for future incremental sends (overwrite previous bookmark)
         execute(f"zfs destroy {bookmark_name}")
         execute(f"zfs bookmark {snap_name} {bookmark_name}")
@@ -282,20 +232,61 @@ def execute(command, return_rc=False):
         return result.stdout
 
 
-def executeout(command, quiet=False):
-    pipe = subprocess.Popen(
-        command, shell=True, encoding="utf-8", stdout=subprocess.PIPE
-    )
-    if not quiet:
-        while pipe.poll() is None:
-            log(pipe.stdout.readline())
+def send_recv(snap_name, bookmark_name, destination):
+    # f"zfs send -w {snap_name} | pv | ssh {dest_host} zfs recv -vu {destination}"
+    # f"zfs send -w {snap_name} | ssh {dest_host} zfs recv -vu {destination}"
+    # f"zfs send -w {snap_name} | pv | zfs recv -vu {destination}"
+    # f"zfs send -w {snap_name} | zfs recv -vu {destination}"
+
+    # f"zfs send -wi {bookmark_name} {snap_name} | pv | ssh {dest_host} zfs recv -vFu {destination}"
+    # f"zfs send -wi {bookmark_name} {snap_name} | ssh {dest_host} zfs recv -vFu {destination}"
+    # f"zfs send -wi {bookmark_name} {snap_name} | pv | zfs recv -vFu {destination}"
+    # f"zfs send -wi {bookmark_name} {snap_name} | zfs recv -vFu {destination}"
+
+    if pvmissing := which("pv") is None:
+        log("Error: pv: command not found. Cannot print status")
+
+    if bookmark_name is not None:
+        cmd1 = f"zfs send -wi {bookmark_name} {snap_name}".split()
+        cmd2 = f"zfs recv -vFu {destination}".split()
     else:
-        pipe.wait()
-    return pipe.returncode
+        cmd1 = f"zfs send -w {snap_name}".split()
+        cmd2 = f"zfs recv -vu {destination}".split()
+
+    p1 = subprocess.Popen(cmd1, stdout=subprocess.PIPE)
+
+    if not quiet and not pvmissing:
+        p2 = subprocess.Popen(
+            ["pv", "-f"],
+            stdin=p1.stdout,
+            stdout=subprocess.PIPE,
+            stderr=sys.stdout,
+        )  # universal_newlines=True,
+    else:
+        p2 = p1
+
+    # this one doesn't like to die even when ran in native bash shell
+    p3 = subprocess.Popen(cmd2, stdin=p2.stdout, stdout=subprocess.PIPE)
+
+    p1.wait()
+
+    # if verbose: #! need "universal_newlines=True" on p2
+    # p2.wait()
+    # while p2.poll() is None:
+    #     line = "\r" + p2.stderr.readline()
+    #     print(line)
+
+    return p1.returncode == 0
 
 
 def log(message):
-    print(message)
+    if not quiet:
+        print(message)
+
+
+def vlog(message):
+    if verbose and not quiet:
+        print(message)
 
 
 main()

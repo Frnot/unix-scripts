@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-version = "1.5.2b"
+version = "1.6.9b"
 
 # TODO: handle keyboard interrupts correctly (kill the subprocess so there isn't an orphaned shell/process)
 ## also cleanup
@@ -9,7 +9,6 @@ version = "1.5.2b"
 # TODO: implement resuming
 
 # Low Prior
-# TODO: check for more destinations after syncing to the first drive
 # TODO: add ssh source support (if zfs supports it)
 
 
@@ -40,15 +39,12 @@ quiet = not sys.stdout.isatty()
 
 # testing quiet feature for crontab
 # TODO: remove
-with open("/tmp/crontest.txt", "w") as f:
-    print(f"{date_time} testing file write", file=f)
 if quiet:
-    with open("/tmp/crontest.txt", "w") as f:
+    with open("/tmp/crontest.txt", "a") as f:
         print(f"{date_time} executing zsync in cron", file=f)
 
 
 def main():
-    # TODO: get arguments
     parser = argparse.ArgumentParser(
         description=usage, formatter_class=argparse.RawDescriptionHelpFormatter
     )
@@ -106,11 +102,16 @@ def main():
 
     # check that destination dataset(s) exist
     pools_to_sync = check_destination(destination)
-    dest_path = destination.split("/", 1)[1]
+    dest_path = destination.split("/", 1)[1]  # destination without pool
+    snap_name = f"{source}@backup_{date_time}"
 
+    vlog(f"Snapshotting source: '{snap_name}'")
+    execute(f"zfs snapshot {snap_name}")
+    delete_snap = True
+
+    vlog(f"Syncing to pools: {pools_to_sync}")
     for dest_pool in pools_to_sync:
         destination = f"{dest_pool}/{dest_path}"
-        snap_name = f"{source}@backup_{date_time}"
         formatted_dest = destination.replace("/", "_")
         bookmark_name = f"{source}#{formatted_dest}-{bookmark_suffix}"
 
@@ -125,7 +126,7 @@ def main():
 
         if dest_dataset_exists:
             if bookmark_exists:
-                refresh(source, dest_host, destination, snap_name, bookmark_name)
+                rc = refresh(source, dest_host, destination, snap_name, bookmark_name)
             # elif: # TODO - lp: see if a snapshot '@backup' exists, see if it will work
             # can use zfs diff to compare dest snapshot to source snapshots
             else:
@@ -140,22 +141,30 @@ def main():
                         f"Dataset '{destination}' exists but no differential information"
                         + " is available (bookmark missing)\nWill overwrite"
                     )
-                    vlog(f"Destroying dataset '{destination}'")
+                    vlog(f"Destroying destination dataset '{destination}'")
                     execute(f"zfs destroy -r {destination}")
-                    init(source, dest_host, destination, snap_name, bookmark_name)
+                    rc = init(source, dest_host, destination, snap_name, bookmark_name)
         else:
             if bookmark_exists:
                 log(f"Bookmark '{bookmark_name}' exists but its dataset is missing")
                 log("Destroying bookmark")
                 execute(f"zfs destroy {bookmark_name}")
 
-            log(f"")
-            init(source, dest_host, destination, snap_name, bookmark_name)
+            rc = init(source, dest_host, destination, snap_name, bookmark_name)
+
+        # RC: 0 success, 1 failure, 2 failure converting snapshot
+        if rc != 2:
+            delete_snap = True
 
         # export pool so the media can be removed
-        # execute(f"zpool export {dest_pool}")
+        vlog(f"Exporting pool '{dest_pool}'")
+        execute(f"zpool export {dest_pool}")
         ###############################################################################################################
         # TODO: send export over ssh
+
+    if delete_snap:
+        log(f"Deleting source snapshot '{snap_name}'")
+        execute(f"zfs destroy {snap_name}")
 
 
 def check_destination(destination):
@@ -163,7 +172,7 @@ def check_destination(destination):
     # destination = destination.split(":")[1]
     # TODO: validate ssh host pool (and support wildcards)
 
-    wildcard = "*"
+    wildcards = ["?", "*"]
 
     dest_pool = destination.split("/")[0]
     imported = [
@@ -175,7 +184,7 @@ def check_destination(destination):
         if "pool:" in pool
     ]
 
-    if wildcard in dest_pool:
+    if [wildcard in dest_pool for wildcard in wildcards]:
         vlog("Checking wildards")
 
         im_match = fnmatch.filter(imported, dest_pool)
@@ -190,7 +199,6 @@ def check_destination(destination):
             if rc == 0:
                 im_match.append(pool)
 
-        vlog(f"DEBUG- pools to try: {im_match}")
         if im_match:
             return im_match
         else:
@@ -212,8 +220,6 @@ def check_destination(destination):
 
 
 def init(source, dest_host, destination, snap_name, bookmark_name):
-    vlog(f"Snapshotting source: '{snap_name}'")
-    execute(f"zfs snapshot {snap_name}")
     log(f"Performing full backup of {source}")
 
     log(f"Sending '{snap_name}' to '{destination}'")
@@ -230,20 +236,18 @@ def init(source, dest_host, destination, snap_name, bookmark_name):
 
         # if snapshot => bookmark conversion succeeded
         if rc == 0:
-            # delete the snapshot that was used for the source
-            execute(f"zfs destroy {snap_name}")
+            return 0
         else:
             elog(
                 f"Error converting snapshot '{snap_name}' into bookmark '{bookmark_name}'"
             )
+            return 2
     else:  # if the command failed, delete the orphaned snapshot
-        elog(f"Error: zfs send failed")
-        execute(f"zfs destroy {snap_name}")
+        elog(f"Error: ZFS send failed")
+        return 1
 
 
 def refresh(source, dest_host, destination, snap_name, bookmark_name):
-    execute(f"zfs snapshot {snap_name}")
-
     log(f"Sending incremental snapshot '{snap_name}' to '{destination}'")
     success = send_recv(snap_name, bookmark_name, destination)
 
@@ -253,49 +257,61 @@ def refresh(source, dest_host, destination, snap_name, bookmark_name):
         # the likelihood that this succeeds is low, but it's cheaper than a full backup
         snaplist = list_snapshots(destination)
 
-        for dest_snap in snaplist:
-            snap_suffix = dest_snap.split("@")[1]
-            source_snap = f"{source}@{snap_suffix}"
-            if snap_suffix in execute(f"zfs list -t snapshot {source}"):
-                log(f"Rolling back '{destination}' to snapshot '{dest_snap}'")
-                execute(f"zfs rollback -rf {dest_snap}")
-                log(f"Sending incremental snapshot '{snap_name}' to '{destination}'")
-                success = send_recv(snap_name, source_snap, destination)
-                if success:
-                    break
+        if snaplist:
+            for dest_snap in snaplist:
+                snap_suffix = dest_snap.split("@")[1]
+                source_snap = f"{source}@{snap_suffix}"
+                if snap_suffix in execute(f"zfs list -t snapshot {source}"):
+                    log(f"Rolling back '{destination}' to snapshot '{dest_snap}'")
+                    execute(f"zfs rollback -rf {dest_snap}")
+                    log(
+                        f"Sending incremental snapshot '{snap_name}' to '{destination}'"
+                    )
+                    success = send_recv(snap_name, source_snap, destination)
+                    if success:
+                        break
 
     # if that didn't work, try full backup
     if not success:
-        elog("Error: ZFS incremental send failed. Will try full backup")
-        result = init(source, dest_host, destination, snap_name, bookmark_name)
-        return result
+        elog("Error: ZFS incremental send failed")
+        if force:
+            log("Attempting full backup")
+            vlog(f"Destroying destination dataset '{destination}'")
+            execute(f"zfs destroy -r {destination}")
+            result = init(source, dest_host, destination, snap_name, bookmark_name)
+            return result
+        else:
+            log("Supply -f to force overwrite (full backup)")
+            return 1
 
     # if success, clean up
     if bookmark_name in execute(f"zfs list -t bookmark {source}"):
         vlog("Deleting old bookmark")
         execute(f"zfs destroy {bookmark_name}")
 
+    # only save most recent snapshot on destination
+    purgelist = list_snapshots(destination)
+    if purgelist:
+        del purgelist[0]  # remove latest snapshot from list
+        for snap in purgelist:  # delete snapshots remaining on list
+            vlog(f"Destroying snapshot on destination: {snap}")
+            execute(f"zfs destroy {snap}")
+
     vlog(f"Converting source snapshot into bookmark: {snap_name} -> {bookmark_name}")
     rc = execute(f"zfs bookmark {snap_name} {bookmark_name}", return_rc=True)
 
     # if snapshot => bookmark conversion succeeded
     if rc == 0:
-        vlog(f"Deleting source snapshot")
-        execute(f"zfs destroy {snap_name}")
+        return 0
     else:
         elog(f"Error converting snapshot '{snap_name}' into bookmark")
-
-    # only save most recent snapshot on destination
-    purgelist = list_snapshots(destination)
-    del purgelist[0]  # remove latest snapshot from list
-    for snap in purgelist:  # delete snapshots remaining on list
-        vlog(f"Destroying snapshot on destination: {snap}")
-        execute(f"zfs destroy {snap}")
+        return 2
 
 
 def execute(command, return_rc=False):
     cmdarr = command.split()
     result = subprocess.run(cmdarr, text=True, capture_output=True)
+
     if return_rc:
         return result.returncode
     else:
@@ -346,12 +362,8 @@ def send_recv(snap_name, bookmark_name, destination):
     #     line = "\r" + p2.stderr.readline()
     #     print(line)
 
-    vlog(f"p1 rc: {p1.returncode}")
-    vlog(f"p2 rc: {p2.returncode}")
-    vlog(f"p3 rc: {p3.returncode}")
-
     if p3.returncode != 0:
-        vlog(f"returncode: {p3.returncode}")
+        vlog(f"Returncode: {p3.returncode}")
 
     return p3.returncode == 0
 
@@ -360,8 +372,9 @@ def list_snapshots(dataset):
     snaplist = execute(
         f"zfs list -t snapshot -s creation -o name {dataset}"
     ).splitlines()
-    del snaplist[0]  # remove header from list
-    snaplist.reverse()  # most recent first
+    if snaplist:
+        del snaplist[0]  # remove header from list
+        snaplist.reverse()  # most recent first
     return snaplist  # trim garbage
 
 

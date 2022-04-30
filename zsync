@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-version = "2.1.4b"
+version = "2.1.5b"
 
 # TODO: handle keyboard interrupts correctly (kill the subprocess so there isn't an orphaned shell/process)
 ## also cleanup
@@ -240,13 +240,11 @@ def init(source, dest_host, destination, snap_name, bookmark_name):
     # if the send command completely sucessfully
     if success:
         # if bookmark already exists, delete it
-        if bookmark_name in execute(ssh_cmd + f"zfs list -t bookmark {source}"):
-            execute(ssh_cmd + f"zfs destroy {bookmark_name}")
+        if bookmark_name in execute(f"zfs list -t bookmark {source}"):
+            execute(f"zfs destroy {bookmark_name}")
 
         # convert the source snapshot to a bookmark for future incremental sends
-        rc = execute(
-            ssh_cmd + f"zfs bookmark {snap_name} {bookmark_name}", return_rc=True
-        )
+        rc = execute(f"zfs bookmark {snap_name} {bookmark_name}", return_rc=True)
 
         # if snapshot => bookmark conversion succeeded
         if rc == 0:

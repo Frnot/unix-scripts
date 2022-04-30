@@ -1,17 +1,12 @@
 #!/usr/bin/env python3
 
-version = "1.2.11b"
-
-# TODO: handle errors if refresh fails (wrong dest dataset for incremental send) (echo $? returns not 0)
-## ex error: cannot receive incremental stream: most recent snapshot of edrive2/test does not match incremental source
-## use an older snapshot of edrive2/test if it exists
-## or (use -f to overwrite anyway)
+version = "1.5.2b"
 
 # TODO: handle keyboard interrupts correctly (kill the subprocess so there isn't an orphaned shell/process)
+## also cleanup
 # TODO: re-implement SSH support
 
 # TODO: implement resuming
-# TODO: fall back from bookmarks to snapshot (get last snapshot from destination and search for it on source)
 
 # Low Prior
 # TODO: check for more destinations after syncing to the first drive
@@ -19,6 +14,7 @@ version = "1.2.11b"
 
 
 import argparse
+import fnmatch
 import datetime
 from shutil import which
 import subprocess
@@ -38,7 +34,17 @@ bookmark_suffix = "zsync_incremental"
 date_time = datetime.datetime.now().strftime("%Y%m%d__%H_%M_%S")
 ssh = False
 verbose = False
+forse = False
 quiet = not sys.stdout.isatty()
+
+
+# testing quiet feature for crontab
+# TODO: remove
+with open("/tmp/crontest.txt", "w") as f:
+    print(f"{date_time} testing file write", file=f)
+if quiet:
+    with open("/tmp/crontest.txt", "w") as f:
+        print(f"{date_time} executing zsync in cron", file=f)
 
 
 def main():
@@ -57,10 +63,16 @@ def main():
         help="Send stream to a destination over ssh",
     )
     parser.add_argument(
-        "-v",
-        dest="verbose",
+        "-v", dest="verbose", action="store_true", help="Enable verbose debug output"
+    )
+    parser.add_argument(
+        "-f",
+        "--full",
+        "--force",
+        dest="force",
         action="store_true",
-        help="Enable verbose debug output",
+        help="Perform a full backup if differential information is missing"
+        + " for destination (overwrites existing data on destination)",
     )
     parser.add_argument(
         "--version",
@@ -78,6 +90,8 @@ def main():
     # ssh = args.ssh
     global verbose
     verbose = args.verbose
+    global force
+    force = args.force
     dest_host = None
 
     # Check that required programs exist on machine
@@ -85,99 +99,120 @@ def main():
         log("Error: zfs: command not found.")
         exit(2)
 
-    # Check for wildcard
-    wildcard = "*"
-    if ssh:
-        if wildcard in destination:
-            log("Error: wildcards are not supported with remote ssh destinations")
-            exit(2)
-        else:
-            dest_host = destination.split(":")[0]
-            destination = destination.split(":")[1]
-            # TODO: validate ssh host pool (and support wildcards)
-            dest_pool = destination.split("/")[0]
-    else:
-        if wildcard in destination:
-            vlog("Checking Wildcards")
-
-            found = False
-            for n in range(10):
-                desttest = destination.replace(wildcard, str(n))
-                if check_dest(desttest):
-                    destination = desttest
-                    dest_pool = destination.split("/")[0]
-                    found = True
-                    break
-            if not found:
-                log("Error: found no valid pool with wildcard substitution")
-                if ":" in destination:
-                    log("Did you mean to specify ssh (-s)?")
-                exit(2)
-        else:
-            if check_dest(destination):
-                dest_pool = destination.split("/")[0]
-            else:
-                log("Error: pool does not exist")
-                exit(2)
-
     # check that source dataset exists
     if source not in execute("zfs list"):
         log(f"Error: source dataset '{source}' does not exist")
         exit(2)
 
-    snap_name = f"{source}@backup_{date_time}"
-    bookmark_name = f"{source}#{dest_pool}-{bookmark_suffix}"
+    # check that destination dataset(s) exist
+    pools_to_sync = check_destination(destination)
+    dest_path = destination.split("/", 1)[1]
 
-    # if last bookmark and destination dataset exist
-    bookmark_exists = bookmark_name in execute(f"zfs list -t bookmark {source}")
-    dest_dataset_exists = destination in execute(f"zfs list -r {dest_pool} -o name")
+    for dest_pool in pools_to_sync:
+        destination = f"{dest_pool}/{dest_path}"
+        snap_name = f"{source}@backup_{date_time}"
+        formatted_dest = destination.replace("/", "_")
+        bookmark_name = f"{source}#{formatted_dest}-{bookmark_suffix}"
 
-    if dest_dataset_exists:
-        if bookmark_exists:
-            refresh(source, dest_host, destination, snap_name, bookmark_name)
-        # elif: # TODO - lp: see if a snapshot '@backup' exists, see if it will work
+        log(f"\nSyncing destination '{destination}'")
+
+        # if last bookmark and destination dataset exist
+        bookmark_exists = bookmark_name in execute(f"zfs list -t bookmark {source}")
+        dest_dataset_exists = destination in execute(f"zfs list -r {dest_pool} -o name")
+
+        # TODO: warn if source has already been synced to a different dest dataset on this dest pool
+        ## check bookmark names
+
+        if dest_dataset_exists:
+            if bookmark_exists:
+                refresh(source, dest_host, destination, snap_name, bookmark_name)
+            # elif: # TODO - lp: see if a snapshot '@backup' exists, see if it will work
+            # can use zfs diff to compare dest snapshot to source snapshots
+            else:
+                if not force:
+                    elog(
+                        f"Error: dataset '{destination}' exists but no differential information"
+                        + " is available (bookmark missing)\nSupply -f to force overwrite"
+                    )
+                    continue
+                else:
+                    log(
+                        f"Dataset '{destination}' exists but no differential information"
+                        + " is available (bookmark missing)\nWill overwrite"
+                    )
+                    vlog(f"Destroying dataset '{destination}'")
+                    execute(f"zfs destroy -r {destination}")
+                    init(source, dest_host, destination, snap_name, bookmark_name)
         else:
-            log(
-                f"Error: dataset '{destination}' exists but no differential information"
-                + " is available (bookmark missing)\nSyncing entire dataset"
-            )
+            if bookmark_exists:
+                log(f"Bookmark '{bookmark_name}' exists but its dataset is missing")
+                log("Destroying bookmark")
+                execute(f"zfs destroy {bookmark_name}")
+
+            log(f"")
             init(source, dest_host, destination, snap_name, bookmark_name)
-    else:
-        if bookmark_exists:
-            log(f"Bookmark '{bookmark_name}' exists but its dataset is missing")
-            log("Destroying bookmark")
-            execute(f"zfs destroy {bookmark_name}")
 
-        log(f"")
-        init(source, dest_host, destination, snap_name, bookmark_name)
-
-    # export pool so the media can be removed
-    execute(f"zpool export {dest_pool}")
-    # TODO: send export over ssh
+        # export pool so the media can be removed
+        # execute(f"zpool export {dest_pool}")
+        ###############################################################################################################
+        # TODO: send export over ssh
 
 
-def check_dest(destination):
+def check_destination(destination):
+    # dest_host = destination.split(":")[0]
+    # destination = destination.split(":")[1]
+    # TODO: validate ssh host pool (and support wildcards)
+
+    wildcard = "*"
+
     dest_pool = destination.split("/")[0]
+    imported = [
+        pool for pool in execute("zpool list -o name").splitlines() if pool != "NAME"
+    ]
+    exported = [
+        pool.split(": ")[1]
+        for pool in execute("zpool import").splitlines()
+        if "pool:" in pool
+    ]
 
-    vlog(f"Checking pool '{dest_pool}' for destination: {destination}")
+    if wildcard in dest_pool:
+        vlog("Checking wildards")
 
-    # check that destination pool exists
-    if dest_pool not in execute("zpool list"):
-        log(f"zpool '{dest_pool}' not found. Attempting to import")
+        im_match = fnmatch.filter(imported, dest_pool)
+        ex_match = fnmatch.filter(exported, dest_pool)
 
-        execute(f"zpool import {dest_pool}")
+        for pool in im_match:
+            log(f"Note: zpool '{pool}' was already mounted")
 
-        if dest_pool not in execute("zpool list"):
-            vlog(f"Error: destination pool '{dest_pool}' does not exist")
-            return False
-    else:
-        log(f"Note: zpool '{dest_pool}' was already mounted")
+        for pool in ex_match:
+            vlog(f"Importing pool '{pool}'")
+            rc = execute(f"zpool import {pool}", return_rc=True)
+            if rc == 0:
+                im_match.append(pool)
 
-    log(f"Destination: {destination} found.")
-    return True
+        vlog(f"DEBUG- pools to try: {im_match}")
+        if im_match:
+            return im_match
+        else:
+            elog(f"Error: no valid substitutions for '{dest_pool}' exist")
+            exit(2)
+
+    else:  # not checking wildcard
+        if dest_pool in imported:
+            log(f"Note: zpool '{dest_pool}' was already mounted")
+            return [dest_pool]
+        elif dest_pool in exported:
+            vlog(f"Importing pool '{pool}'")
+            rc = execute(f"zfs import {pool}", return_rc=True)
+            if rc == 0:
+                return [dest_pool]
+            else:
+                elog(f"Error: destination pool '{dest_pool}' does not exist")
+                exit(2)
 
 
 def init(source, dest_host, destination, snap_name, bookmark_name):
+    vlog(f"Snapshotting source: '{snap_name}'")
     execute(f"zfs snapshot {snap_name}")
     log(f"Performing full backup of {source}")
 
@@ -195,8 +230,14 @@ def init(source, dest_host, destination, snap_name, bookmark_name):
 
         # if snapshot => bookmark conversion succeeded
         if rc == 0:
+            # delete the snapshot that was used for the source
             execute(f"zfs destroy {snap_name}")
+        else:
+            elog(
+                f"Error converting snapshot '{snap_name}' into bookmark '{bookmark_name}'"
+            )
     else:  # if the command failed, delete the orphaned snapshot
+        elog(f"Error: zfs send failed")
         execute(f"zfs destroy {snap_name}")
 
 
@@ -206,29 +247,50 @@ def refresh(source, dest_host, destination, snap_name, bookmark_name):
     log(f"Sending incremental snapshot '{snap_name}' to '{destination}'")
     success = send_recv(snap_name, bookmark_name, destination)
 
-    # if the send command completely sucessfully
-    if success:
-        # convert the source snapshot to a bookmark for future incremental sends (overwrite previous bookmark)
+    # if send command failed, likely source/dest are out of sync or bookmark wasn't created
+    if not success and force:
+        # roll back each destination snapshot and attemp to sync
+        # the likelihood that this succeeds is low, but it's cheaper than a full backup
+        snaplist = list_snapshots(destination)
+
+        for dest_snap in snaplist:
+            snap_suffix = dest_snap.split("@")[1]
+            source_snap = f"{source}@{snap_suffix}"
+            if snap_suffix in execute(f"zfs list -t snapshot {source}"):
+                log(f"Rolling back '{destination}' to snapshot '{dest_snap}'")
+                execute(f"zfs rollback -rf {dest_snap}")
+                log(f"Sending incremental snapshot '{snap_name}' to '{destination}'")
+                success = send_recv(snap_name, source_snap, destination)
+                if success:
+                    break
+
+    # if that didn't work, try full backup
+    if not success:
+        elog("Error: ZFS incremental send failed. Will try full backup")
+        result = init(source, dest_host, destination, snap_name, bookmark_name)
+        return result
+
+    # if success, clean up
+    if bookmark_name in execute(f"zfs list -t bookmark {source}"):
+        vlog("Deleting old bookmark")
         execute(f"zfs destroy {bookmark_name}")
-        execute(f"zfs bookmark {snap_name} {bookmark_name}")
 
-        # only save most recent snapshot on destination
-        snaplist = execute(
-            f"zfs list -t snapshot {destination}"
-        ).splitlines()  # Get list of snapshots for destination
-        del snaplist[0]  # remove header from list
-        del snaplist[0]  # remove latest snapshot from list
-        purgelist = [
-            snap.split()[0] for snap in snaplist
-        ]  # format list to only contain snapshot paths
-        for snap in purgelist:  # delete snapshots remaining on list
-            execute(f"zfs destroy {snap}")
+    vlog(f"Converting source snapshot into bookmark: {snap_name} -> {bookmark_name}")
+    rc = execute(f"zfs bookmark {snap_name} {bookmark_name}", return_rc=True)
 
+    # if snapshot => bookmark conversion succeeded
+    if rc == 0:
+        vlog(f"Deleting source snapshot")
+        execute(f"zfs destroy {snap_name}")
     else:
-        log("Error: ZFS send failed.")
+        elog(f"Error converting snapshot '{snap_name}' into bookmark")
 
-    # delete the snapshot that was used for the source
-    execute(f"zfs destroy {snap_name}")
+    # only save most recent snapshot on destination
+    purgelist = list_snapshots(destination)
+    del purgelist[0]  # remove latest snapshot from list
+    for snap in purgelist:  # delete snapshots remaining on list
+        vlog(f"Destroying snapshot on destination: {snap}")
+        execute(f"zfs destroy {snap}")
 
 
 def execute(command, return_rc=False):
@@ -252,14 +314,14 @@ def send_recv(snap_name, bookmark_name, destination):
     # f"zfs send -wi {bookmark_name} {snap_name} | zfs recv -vFu {destination}"
 
     if pvmissing := which("pv") is None:
-        log("Error: pv: command not found. Cannot print status")
+        elog("Error: pv: command not found. Cannot print status")
 
     if bookmark_name is not None:
         cmd1 = f"zfs send -wi {bookmark_name} {snap_name}".split()
         cmd2 = f"zfs recv -vFu {destination}".split()
     else:
         cmd1 = f"zfs send -w {snap_name}".split()
-        cmd2 = f"zfs recv -vu {destination}".split()
+        cmd2 = f"zfs recv -vFu {destination}".split()
 
     p1 = subprocess.Popen(cmd1, stdout=subprocess.PIPE)
 
@@ -276,7 +338,7 @@ def send_recv(snap_name, bookmark_name, destination):
     # this one doesn't like to die even when ran in native bash shell
     p3 = subprocess.Popen(cmd2, stdin=p2.stdout, stdout=subprocess.PIPE)
 
-    p1.wait()
+    p3.wait()  # wait on p3 because p1 may never return in the event of a recv failure
 
     # if verbose: #! need "universal_newlines=True" on p2
     # p2.wait()
@@ -284,7 +346,23 @@ def send_recv(snap_name, bookmark_name, destination):
     #     line = "\r" + p2.stderr.readline()
     #     print(line)
 
-    return p1.returncode == 0
+    vlog(f"p1 rc: {p1.returncode}")
+    vlog(f"p2 rc: {p2.returncode}")
+    vlog(f"p3 rc: {p3.returncode}")
+
+    if p3.returncode != 0:
+        vlog(f"returncode: {p3.returncode}")
+
+    return p3.returncode == 0
+
+
+def list_snapshots(dataset):
+    snaplist = execute(
+        f"zfs list -t snapshot -s creation -o name {dataset}"
+    ).splitlines()
+    del snaplist[0]  # remove header from list
+    snaplist.reverse()  # most recent first
+    return snaplist  # trim garbage
 
 
 def log(message):
@@ -295,6 +373,10 @@ def log(message):
 def vlog(message):
     if verbose and not quiet:
         print(message)
+
+
+def elog(message):
+    print(f"{date_time} {message}")
 
 
 main()

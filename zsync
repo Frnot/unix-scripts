@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-version = "2.1.5b"
+version = "2.2.0b"
 
 # TODO: handle keyboard interrupts correctly (kill the subprocess so there isn't an orphaned shell/process)
 ## also cleanup
@@ -169,7 +169,7 @@ def main():
         execute(ssh_cmd + f"zpool export {dest_pool}")
 
     if delete_snap:
-        log(f"Deleting source snapshot '{snap_name}'")
+        vlog(f"Deleting source snapshot '{snap_name}'")
         execute(f"zfs destroy {snap_name}")
 
 
@@ -235,7 +235,13 @@ def init(source, dest_host, destination, snap_name, bookmark_name):
     log(f"Performing full backup of {source}")
 
     log(f"Sending '{snap_name}' to '{destination}'")
-    success = send_recv(snap_name, None, destination, dest_host)
+    try:
+        success = send_recv(snap_name, None, destination, dest_host)
+    except SystemExit:
+        log("Cleaning up")
+        vlog(f"Deleting source snapshot '{snap_name}'")
+        execute(f"zfs destroy {snap_name}")
+        exit(2)
 
     # if the send command completely sucessfully
     if success:
@@ -263,27 +269,35 @@ def refresh(source, dest_host, destination, snap_name, bookmark_name):
     ssh_cmd = f"ssh {dest_host} " if ssh else ""
 
     log(f"Sending incremental snapshot '{snap_name}' to '{destination}'")
-    success = send_recv(snap_name, bookmark_name, destination, dest_host)
+    try:
+        success = send_recv(snap_name, bookmark_name, destination, dest_host)
 
-    # if send command failed, likely source/dest are out of sync or bookmark wasn't created
-    if not success and force:
-        # roll back each destination snapshot and attemp to sync
-        # the likelihood that this succeeds is low, but it's cheaper than a full backup
-        snaplist = list_snapshots(destination)
+        # if send command failed, likely source/dest are out of sync or bookmark wasn't created
+        if not success and force:
+            # roll back each destination snapshot and attemp to sync
+            # the likelihood that this succeeds is low, but it's cheaper than a full backup
+            snaplist = list_snapshots(destination)
 
-        if snaplist:
-            for dest_snap in snaplist:
-                snap_suffix = dest_snap.split("@")[1]
-                source_snap = f"{source}@{snap_suffix}"
-                if snap_suffix in execute(f"zfs list -t snapshot {source}"):
-                    log(f"Rolling back '{destination}' to snapshot '{dest_snap}'")
-                    execute(ssh_cmd + f"zfs rollback -rf {dest_snap}")
-                    log(
-                        f"Sending incremental snapshot '{snap_name}' to '{destination}'"
-                    )
-                    success = send_recv(snap_name, source_snap, destination, dest_host)
-                    if success:
-                        break
+            if snaplist:
+                for dest_snap in snaplist:
+                    snap_suffix = dest_snap.split("@")[1]
+                    source_snap = f"{source}@{snap_suffix}"
+                    if snap_suffix in execute(f"zfs list -t snapshot {source}"):
+                        log(f"Rolling back '{destination}' to snapshot '{dest_snap}'")
+                        execute(ssh_cmd + f"zfs rollback -rf {dest_snap}")
+                        log(
+                            f"Sending incremental snapshot '{snap_name}' to '{destination}'"
+                        )
+                        success = send_recv(
+                            snap_name, source_snap, destination, dest_host
+                        )
+                        if success:
+                            break
+    except SystemExit:
+        log("Cleaning up")
+        vlog(f"Deleting source snapshot '{snap_name}'")
+        execute(f"zfs destroy {snap_name}")
+        exit(2)
 
     # if that didn't work, try full backup
     if not success:
@@ -345,27 +359,36 @@ def send_recv(snap_name, bookmark_name, destination, dest_host):
         cmd1 = f"zfs send -w {snap_name}".split()
         cmd2 = (ssh_cmd + f"zfs recv -vFu {destination}").split()
 
-    p1 = subprocess.Popen(cmd1, stdout=subprocess.PIPE)
+    try:
+        p1 = subprocess.Popen(cmd1, stdout=subprocess.PIPE)
 
-    if not quiet and not pvmissing:
-        p2 = subprocess.Popen(
-            ["pv", "-f"],
-            stdin=p1.stdout,
-            stdout=subprocess.PIPE,
-            stderr=sys.stdout,
-        )  # universal_newlines=True,
-    else:
-        p2 = p1
+        if not quiet and not pvmissing:
+            p2 = subprocess.Popen(
+                ["pv", "-f"],
+                stdin=p1.stdout,
+                stdout=subprocess.PIPE,
+                stderr=sys.stdout,
+            )  # universal_newlines=True,
+        else:
+            p2 = p1
 
-    # this one doesn't like to die even when ran in native bash shell
-    p3 = subprocess.Popen(cmd2, stdin=p2.stdout, stdout=subprocess.PIPE)
+        # this one doesn't like to die even when ran in native bash shell
+        p3 = subprocess.Popen(cmd2, stdin=p2.stdout, stdout=subprocess.PIPE)
 
-    p3.wait()  # wait on p3 because p1 may never return in the event of recv failure
+        p3.wait()  # wait on p3 because p1 may never return in the event of recv failure
+    except KeyboardInterrupt:
+        log("Terminating zsync")
+        raise SystemExit
+    except Exception as e:
+        elog(f"Error executing send/recv:\n{e}")
+        errorcode = -1
 
-    if p3.returncode != 0:
-        vlog(f"Returncode: {p3.returncode}")
+    errorcode = p3.returncode
 
-    return p3.returncode == 0
+    if errorcode != 0:
+        vlog(f"Process returncode: {p3.returncode}")
+
+    return errorcode == 0
 
 
 def list_snapshots(dataset):

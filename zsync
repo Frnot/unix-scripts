@@ -1,9 +1,6 @@
 #!/usr/bin/env python3
 
-version = "2.3.0b"
-
-# TODO: handle keyboard interrupts correctly (kill the subprocess so there isn't an orphaned shell/process)
-## also cleanup
+version = "2.3.1b"
 
 # TODO: make sure ssh has access to destination host
 # TODO: implement resuming

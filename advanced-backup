@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-version = "1.0.0b"
+version = "1.3.2b"
 
 # TODO: take lv snapshot for backup, delete it after
 # TODO: cleanup incomplete archives if tar - xz does not finish
@@ -8,7 +8,10 @@ version = "1.0.0b"
 # TODO - DATA: save the hash to a persisent log file so i can see if it ever doesn't change (unlikely)
 # TODO: look into differential compressed archives
 
+# TODO: time zstd compression
+
 import argparse
+import atexit
 import datetime
 import hashlib
 import os
@@ -16,6 +19,10 @@ from os import path
 import subprocess
 
 usage = f"usage text"
+
+vg = "plex-vg"
+lv = "root"
+snapname = "snap"
 
 date_time = datetime.datetime.now().strftime("%Y%m%d__%H_%M_%S")
 
@@ -40,19 +47,31 @@ def main():
     source_dir = path.normpath(args.source_directory)
     dest_dir = args.destination_directory
 
-    name = path.basename(source_dir)
-    dest_filenamep = f"{name}-{date_time}.tar.xz.part"
-    dest_filename = f"{name}-{date_time}.tar.xz"
-    destinationp = path.join(dest_dir, f"{name}-{date_time}.tar.xz.part")
-    destination = path.join(dest_dir, f"{name}-{date_time}.tar.xz")
+    # take a snapshot
+    (result, rc) = execute("lvs")
+    if [r for r in result.splitlines() if lv in r] is None:
+        print(f"LV '{lv}' does not exist. try running command 'lvs'")
+        # test for vg, print 'use vgs' if not exist
+
+    execute(f"lvcreate -s -L500M -n {snapname} {vg}/{lv}")
+    execute(f"mkdir /tmp/{snapname}")
+    execute(f"mount /dev/{vg}/{snapname} /tmp/{snapname}")
+    atexit.register(delete_snap, vg, snapname)
+
+    # name = path.basename(source_dir)
+    name = "plexbackup"
+    source = path.normpath("/tmp/snap" + source_dir)
+    destinationp = path.join(dest_dir, f"{name}-{date_time}.tar.zst.part")
+    destination = path.join(dest_dir, f"{name}-{date_time}.tar.zst")
 
     # Compress source files
-    log(f"Archiving '{source_dir}'")
-    archive(source_dir, destinationp)
+    log(f"Archiving '{source}' to '{destinationp}'")
+    archive(source, destinationp)
     os.rename(destinationp, destination)
     log(f"Saved archive to '{destination}'")
 
 
+"""
 def archive(src_dir, dest):
     cmd1 = "tar -cf -".split()
     print(cmd1)
@@ -63,6 +82,39 @@ def archive(src_dir, dest):
     p1 = subprocess.Popen(cmd1, stdout=subprocess.PIPE)
     with open(dest, "w") as out_file:
         p2 = subprocess.Popen(cmd2, stdin=p1.stdout, stdout=out_file)
+"""
+
+
+def archive(src_dir, destination):
+    print(f"DEBUG- source: '{src_dir}' dest: '{destination}'")
+    cmd = [
+        "tar",
+        "-I",
+        "zstd -1",
+        "-cf",
+        destination,
+        src_dir,
+    ]
+
+    print(f"cmd: '{cmd}'")
+    result = subprocess.run(cmd, text=True, capture_output=True)
+
+    print(f"\n ran this command: '{subprocess.list2cmdline(result.args)}'\n")
+    print(result.stderr)
+
+    return (result.stdout, result.returncode)
+
+
+def execute(command):
+    cmdarr = command.split()
+    result = subprocess.run(cmdarr, text=True, capture_output=True)
+
+    return (result.stdout, result.returncode)
+
+
+def delete_snap(vg, snapname):
+    execute(f"umount /tmp/{snapname}")
+    execute(f"lvremove {vg}/{snapname} -y")
 
 
 def log(message):

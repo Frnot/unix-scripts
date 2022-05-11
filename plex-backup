@@ -20,7 +20,7 @@ vg = "plex-vg"
 lv = "root"
 snapname = "backup_snap"
 
-date_time = datetime.datetime.now().strftime("%Y%m%d__%H_%M_%S")
+date_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
 
 logfile = "/tmp/plex-backup.log"
 log = None
@@ -93,7 +93,7 @@ def main():
     # atexit.register(delete_incomplete_archive)
     # TODO: check what borg does when you interrupt a backup
     source = path.normpath(f"/tmp/{snapname}" + source_dir)
-    destination = f"{dest_repo}::plexarchive{date_time}"
+    destination = f"{dest_repo}::plexarchive_{date_time}"
     log.msg(f" using borg to backup '{source}' to '{destination}'")
     archive(source, destination)
 
@@ -109,7 +109,7 @@ def run(command):
 
 
 def archive(source, destination):
-    command = f"borg create --stats --progress --exclude Cache --compression zstd"
+    command = f"borg create --stats --progress --exclude /Cache --compression zstd"
     cmdarr = command.split()
     cmdarr.append(destination)
     cmdarr.append(source)

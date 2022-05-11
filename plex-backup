@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-version = "2.6.2b"
+version = "2.6.3b"
 
 # TODO: investigate lvm snapshot -kn (non active)
 
@@ -19,7 +19,6 @@ usage = f"usage text"
 vg = "plex-vg"
 lv = "root"
 snapname = "backup_snap"
-reponame = "plex@fileserver:/vault/media/plex_server/borg_repo"
 
 date_time = datetime.datetime.now().strftime("%Y%m%d__%H_%M_%S")
 

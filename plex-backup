@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-version = "2.6.3b"
+version = "2.6.4b"
 
 # TODO: investigate lvm snapshot -kn (non active)
 
@@ -109,7 +109,7 @@ def run(command):
 
 
 def archive(source, destination):
-    command = f"borg create --stats --progress --exclude /Cache --compression zstd"
+    command = f"borg create --stats --progress --exclude */Cache --compression zstd"
     cmdarr = command.split()
     cmdarr.append(destination)
     cmdarr.append(source)

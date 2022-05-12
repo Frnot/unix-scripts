@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-version = "2.6.7b"
+version = "2.6.10b"
 
 # TODO: investigate lvm snapshot -kn (non active)
 
@@ -72,7 +72,7 @@ def main():
 
     # check that volume group and logical volume exists
     # TODO: automatically get the vg/lv that the dest directory resides on
-    (result, rc) = run("/sbin/lvs")
+    result, err, rc = run("/sbin/lvs")
     if [r for r in result.splitlines() if lv in r] is None:
         log.msg(f"LV '{lv}' does not exist. try running command 'lvs'")
         # test for vg, print 'use vgs' if not exist
@@ -109,7 +109,7 @@ def run(command):
     try:
         result = subprocess.run(cmdarr, text=True, capture_output=True)
 
-        return (result.stdout, result.returncode)
+        return (result.stdout, result.stderr, result.returncode)
     except Exception as e:
         log.msg(f"Error: {e}")
         exit(2)
@@ -121,12 +121,17 @@ def archive(source, destination):
         if not quiet
         else f"borg create --stats --exclude */Cache --compression zstd"
     )
+
     cmdarr = command.split()
     cmdarr.append(destination)
     cmdarr.append(source)
     log.msg(f"running command: '{' '.join(cmdarr)}'")
 
-    p = subprocess.Popen(cmdarr)  # , stdout=sys.stdout
+    if quiet:
+        with open(log.logfilepath, "a") as f:
+            p = subprocess.Popen(cmdarr, stdout=f, stderr=f)
+    else:
+        p = subprocess.Popen(cmdarr)  # stdout=sys.stdout
     p.wait()
 
     return p.returncode
@@ -142,7 +147,9 @@ def delete_snap(vg, snapname):
 def prune_archives(reponame):
     # borg prune --keep-last N <reponame>
     log.msg(f"pruning old archives")
-    run(f"borg prune --keep-last 3 {reponame}")
+    stat, out, rc = run(f"borg prune --stats --list --keep-last 3 {reponame}")
+    log.msg("\n" + out)
+    # TODO: run borg compact when v1.2
 
 
 def delete_incomplete_archive():
@@ -154,18 +161,14 @@ class Log:
         self.logfilepath = logfilepath
         self.quiet = quiet
         if quiet:
-            self.logfile = open(logfilepath, "w")
-            atexit.register(self.logfile.close)
-            self.logfile.write(
-                f"{date_time} - starting backup of plex media server files\n"
-            )
-            self.logfile.flush()
+            with open(self.logfilepath, "w") as f:
+                f.write(f"{date_time} - starting backup of plex media server files\n")
 
     def msg(self, message):
         if self.quiet:
             timenow = datetime.datetime.now().strftime("%H:%M:%S")
-            self.logfile.write(f"{timenow} - {message}\n")
-            self.logfile.flush()
+            with open(self.logfilepath, "a") as f:
+                f.write(f"{timenow} - {message}\n")
         else:
             print(message)
 

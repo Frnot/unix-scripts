@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-version = "2.6.4b"
+version = "2.6.7b"
 
 # TODO: investigate lvm snapshot -kn (non active)
 
@@ -32,7 +32,7 @@ def main():
     log = Log(logfile, quiet)
 
     # check that necessary applications are available
-    if which("lvs") is None:
+    if which("/sbin/lvs") is None:
         log.msg("Error: lvs: command not found.")
         exit(2)
     if which("borg") is None:
@@ -47,6 +47,9 @@ def main():
     parser.add_argument("source_directory", help="The directory to backup")
     parser.add_argument("destination_repo", help="The borg repo to send the backup to")
 
+    parser.add_argument(
+        "--version", action="version", version=f"plex-backup version: {version}"
+    )
     parser.add_argument(
         "-k",
         "--keep",
@@ -69,7 +72,7 @@ def main():
 
     # check that volume group and logical volume exists
     # TODO: automatically get the vg/lv that the dest directory resides on
-    (result, rc) = run("lvs")
+    (result, rc) = run("/sbin/lvs")
     if [r for r in result.splitlines() if lv in r] is None:
         log.msg(f"LV '{lv}' does not exist. try running command 'lvs'")
         # test for vg, print 'use vgs' if not exist
@@ -78,7 +81,7 @@ def main():
     log.msg("stopping plex media server")
     run("systemctl stop plexmediaserver.service")
     log.msg(f"creating snapshot of '{vg}/{lv}' as '{snapname}'")
-    run(f"lvcreate -s -L5G -n {snapname} {vg}/{lv}")
+    run(f"/sbin/lvcreate -s -L5G -n {snapname} {vg}/{lv}")
     log.msg("starting plex media server")
     run("systemctl start plexmediaserver.service")
     # TODO: restart plex if interrupt while creating snapshot
@@ -103,13 +106,21 @@ def main():
 
 def run(command):
     cmdarr = command.split()
-    result = subprocess.run(cmdarr, text=True, capture_output=True)
+    try:
+        result = subprocess.run(cmdarr, text=True, capture_output=True)
 
-    return (result.stdout, result.returncode)
+        return (result.stdout, result.returncode)
+    except Exception as e:
+        log.msg(f"Error: {e}")
+        exit(2)
 
 
 def archive(source, destination):
-    command = f"borg create --stats --progress --exclude */Cache --compression zstd"
+    command = (
+        f"borg create --stats --progress --exclude */Cache --compression zstd"
+        if not quiet
+        else f"borg create --stats --exclude */Cache --compression zstd"
+    )
     cmdarr = command.split()
     cmdarr.append(destination)
     cmdarr.append(source)
@@ -124,7 +135,7 @@ def archive(source, destination):
 def delete_snap(vg, snapname):
     log.msg(f"deleting snapshot '{vg}/{snapname}'")
     run(f"umount /tmp/{snapname}")
-    run(f"lvremove {vg}/{snapname} -y")
+    run(f"/sbin/lvremove {vg}/{snapname} -y")
     # TODO: check for errors when unmounting
 
 
@@ -146,13 +157,15 @@ class Log:
             self.logfile = open(logfilepath, "w")
             atexit.register(self.logfile.close)
             self.logfile.write(
-                f"{date_time} - starting backup of plex media server files"
+                f"{date_time} - starting backup of plex media server files\n"
             )
+            self.logfile.flush()
 
     def msg(self, message):
         if self.quiet:
             timenow = datetime.datetime.now().strftime("%H:%M:%S")
             self.logfile.write(f"{timenow} - {message}\n")
+            self.logfile.flush()
         else:
             print(message)
 

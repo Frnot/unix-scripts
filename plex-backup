@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-version = "2.6.10b"
+version = "2.7.0b"
 
 # TODO: investigate lvm snapshot -kn (non active)
 
@@ -63,12 +63,12 @@ def main():
     dest_repo = args.destination_repo
 
     if not path.isdir(source_dir):
-        log.msg(f"directory '{source_dir}' does not exist")
+        log.msg(f"Directory '{source_dir}' does not exist")
         exit(2)
     # TODO: check for borg destination repo
 
-    log.msg(f"source directory: '{source_dir}'")
-    log.msg(f"destination repo: '{dest_repo}'")
+    log.msg(f"Source directory: '{source_dir}'")
+    log.msg(f"Destination repo: '{dest_repo}'")
 
     # check that volume group and logical volume exists
     # TODO: automatically get the vg/lv that the dest directory resides on
@@ -78,17 +78,17 @@ def main():
         # test for vg, print 'use vgs' if not exist
 
     # quiesce plex media server and take a snapshot
-    log.msg("stopping plex media server")
+    log.msg("Stopping plex media server")
     run("systemctl stop plexmediaserver.service")
-    log.msg(f"creating snapshot of '{vg}/{lv}' as '{snapname}'")
+    log.msg(f"Creating snapshot of '{vg}/{lv}' as '{snapname}'")
     run(f"/sbin/lvcreate -s -L5G -n {snapname} {vg}/{lv}")
-    log.msg("starting plex media server")
+    log.msg("Starting plex media server")
     run("systemctl start plexmediaserver.service")
     # TODO: restart plex if interrupt while creating snapshot
     atexit.register(delete_snap, vg, snapname)
 
     # mount snapshot
-    log.msg(f"mounting snapshot '/dev/{vg}/{snapname}' at '/tmp/{snapname}'")
+    log.msg(f"Mounting snapshot '/dev/{vg}/{snapname}' at '/tmp/{snapname}'")
     run(f"mkdir /tmp/{snapname}")
     run(f"mount /dev/{vg}/{snapname} /tmp/{snapname}")
 
@@ -97,7 +97,7 @@ def main():
     # TODO: check what borg does when you interrupt a backup
     source = path.normpath(f"/tmp/{snapname}" + source_dir)
     destination = f"{dest_repo}::plexarchive_{date_time}"
-    log.msg(f" using borg to backup '{source}' to '{destination}'")
+    log.msg(f"Using borg to backup '{source}' to '{destination}'")
     archive(source, destination)
 
     atexit.register(prune_archives, dest_repo)
@@ -125,7 +125,7 @@ def archive(source, destination):
     cmdarr = command.split()
     cmdarr.append(destination)
     cmdarr.append(source)
-    log.msg(f"running command: '{' '.join(cmdarr)}'")
+    log.msg(f"Running command: '{' '.join(cmdarr)}'")
 
     if quiet:
         with open(log.logfilepath, "a") as f:
@@ -138,7 +138,7 @@ def archive(source, destination):
 
 
 def delete_snap(vg, snapname):
-    log.msg(f"deleting snapshot '{vg}/{snapname}'")
+    log.msg(f"Deleting snapshot '{vg}/{snapname}'")
     run(f"umount /tmp/{snapname}")
     run(f"/sbin/lvremove {vg}/{snapname} -y")
     # TODO: check for errors when unmounting
@@ -146,8 +146,10 @@ def delete_snap(vg, snapname):
 
 def prune_archives(reponame):
     # borg prune --keep-last N <reponame>
-    log.msg(f"pruning old archives")
-    stat, out, rc = run(f"borg prune --stats --list --keep-last 3 {reponame}")
+    log.msg(f"Pruning old archives")
+    stat, out, rc = run(
+        f"borg prune --stats --list --keep-daily 7 --keep-weekly 3 {reponame}"
+    )
     log.msg("\n" + out)
     # TODO: run borg compact when v1.2
 
@@ -162,7 +164,8 @@ class Log:
         self.quiet = quiet
         if quiet:
             with open(self.logfilepath, "w") as f:
-                f.write(f"{date_time} - starting backup of plex media server files\n")
+                timenow = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                f.write(f"{timenow} - Starting plex-backup version {version}\n")
 
     def msg(self, message):
         if self.quiet:

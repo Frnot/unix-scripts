@@ -1,23 +1,23 @@
 #!/bin/bash
-# v0.11
+# v0.12
 
 DATETIME=$(date +"%Y_%m_%d__%H_%M_%S")
 
-SOURCE_DIR=${@: -1}
+SOURCE_DIR=$1
 DEST_DIR=$(basename $SOURCE_DIR)
-REMOTE="encrypted_gdrive"
+REMOTE=$2
 
-LOG=/tmp/rclone_"$DEST_DIR".log
-LOG_ROTATE=/tmp/rclone_"$DEST_DIR"_"$DATETIME".log
+LOG=/tmp/rclone_"$REMOTE"/"$DEST_DIR".log
+LOG_ROTATE=/tmp/rclone_"$REMOTE"/"$DEST_DIR"_old.log
 
 
 log() {
-	if [ "$1" == "-e" ]
-	then
-		printf "Error: ${*:2}" >(tee >(cat 1>&2))
-	else
-		printf "${*:2}"
-	fi
+        if [ "$1" == "-e" ]
+        then
+                printf "Error: ${*:2}" >(tee >(cat 1>&2))
+        else
+                printf "${*:2}"
+        fi
 }
 
 # Cleanup will be called on exit

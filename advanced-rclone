@@ -1,5 +1,5 @@
 #!/bin/bash
-# v0.12
+# v0.13
 
 DATETIME=$(date +"%Y_%m_%d__%H_%M_%S")
 
@@ -7,7 +7,8 @@ SOURCE_DIR=$1
 DEST_DIR=$(basename $SOURCE_DIR)
 REMOTE=$2
 
-LOG=/tmp/rclone_"$REMOTE"/"$DEST_DIR".log
+mkdir -p /tmp/rclone_"$REMOTE"
+LOG=/tmp/rclone_"$REMOTE"/"$DEST_DIR".log 
 LOG_ROTATE=/tmp/rclone_"$REMOTE"/"$DEST_DIR"_old.log
 
 

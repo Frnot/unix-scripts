@@ -1,0 +1,15 @@
+[Unit]
+Description = "Mounts remote sshfs share on boot. Will retry until successful"
+Wants = network-online.target
+After = network-online.target
+
+[Service]
+User=root
+ExecStart=/usr/bin/sshfs [user]@[host]:[remote_dir] [local_dir] -f -o reconnect,allow_other
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+
+# /etc/systemd/system/automount.service

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# v0.7
+# v0.9
 
 import time
 import datetime
@@ -53,47 +53,58 @@ To snapshot all running VMs automatically, calculated your desired options and t
 
 verbose = False
 
+
 def main():
     try:
-        options, remaining_args = getopt.gnu_getopt(sys.argv[1:], "vkm:l:h:d:w:M:y:", ["help","keep-all"])
+        options, remaining_args = getopt.gnu_getopt(
+            sys.argv[1:], "vkm:l:h:d:w:M:y:", ["help", "keep-all"]
+        )
     except getopt.GetoptError as error:
         print(error)
         sys.exit(2)
 
-    keep_last, keep_minutely, keep_hourly, keep_daily, keep_weekly, keep_monthly, keep_yearly = (0,0,0,0,0,0,0)
+    (
+        keep_last,
+        keep_minutely,
+        keep_hourly,
+        keep_daily,
+        keep_weekly,
+        keep_monthly,
+        keep_yearly,
+    ) = (0, 0, 0, 0, 0, 0, 0)
 
     keep_all = False
     check_arg = True
     for opt, arg in options:
-        if opt == '-l':
+        if opt == "-l":
             keep_last = int(arg)
             check_arg = False
-        elif opt == '-m':
+        elif opt == "-m":
             keep_minutely = int(arg)
             check_arg = False
-        elif opt == '-h':
+        elif opt == "-h":
             keep_hourly = int(arg)
             check_arg = False
-        elif opt == '-d':
+        elif opt == "-d":
             keep_daily = int(arg)
             check_arg = False
-        elif opt == '-w':
+        elif opt == "-w":
             keep_weekly = int(arg)
             check_arg = False
-        elif opt == '-M':
+        elif opt == "-M":
             keep_monthly = int(arg)
             check_arg = False
-        elif opt == '-y':
+        elif opt == "-y":
             keep_yearly = int(arg)
             check_arg = False
-        elif opt == '-v':
+        elif opt == "-v":
             global verbose
             verbose = True
         elif opt == "--help":
             print(usage)
             print(help)
             sys.exit(2)
-        elif opt in ('-k', '--keep-all'):
+        elif opt in ("-k", "--keep-all"):
             keep_all = True
             check_arg = False
 
@@ -117,56 +128,113 @@ def main():
         keep_monthly = int(remaining_args[6])
         keep_yearly = int(remaining_args[7])
 
-
     if not keep_all:
-        if (keep_last, keep_minutely, keep_hourly, keep_daily, keep_weekly, keep_monthly, keep_yearly) == (0,0,0,0,0,0,0):
+        if (
+            keep_last,
+            keep_minutely,
+            keep_hourly,
+            keep_daily,
+            keep_weekly,
+            keep_monthly,
+            keep_yearly,
+        ) == (0, 0, 0, 0, 0, 0, 0):
             print("Error: cannot set all pruning options to zero. (must specify '-k')")
             print(usage)
             return
 
+    type = is_container(vmid)
+
     retry = 3
     while True:
         retry -= 1
-        success = take_snapshot(vmid)
-        if success: break
+        success = take_snapshot(vmid, type)
+        if success:
+            break
 
         print(f"Snapshot of vmid {vmid} failed.")
-        if retry > 0: 
+        if retry > 0:
             print(f"Waiting 30 seconds before retrying. Will retry {retry} more times")
             time.sleep(30)
         else:
-            print(f"Snapshot of vmid {vmid} failed. exiting.")
+            print(f"Snapshot of vmid {vmid} failed {retry} times. exiting.")
             sys.exit(2)
 
-
     if keep_all:
-        if verbose: print("Keep all flag set, will not prune snapshots")
+        if verbose:
+            print("'keep all' flag set. will not prune snapshots.")
     else:
-        prune(vmid, keep_last, keep_minutely, keep_hourly, keep_daily, keep_weekly, keep_monthly, keep_yearly)
+        prune(
+            vmid,
+            type,
+            keep_last,
+            keep_minutely,
+            keep_hourly,
+            keep_daily,
+            keep_weekly,
+            keep_monthly,
+            keep_yearly,
+        )
 
 
+def is_container(vmid):
+    result = (
+        os.popen(
+            f"cat /etc/pve/.vmlist | grep -w {vmid} | awk '{{print$6}}' | tr -d '\":,'"
+        )
+        .read()
+        .replace("\n", "")
+    )
+    if verbose:
+        print(f"vmid {vmid} is type '{result}'")
+    return result == "lxc"
 
-def take_snapshot(vmid):
+
+def take_snapshot(vmid, container):
     time = datetime.datetime.now().strftime("%Y_%m_%d__%H_%M_%S")
-    if verbose: print(f"Taking snapshot of vmid: {vmid} (auto_{time})")
-    if verbose: 
+    if verbose:
+        print(f"Taking snapshot of vmid: {vmid} (auto_{time})")
+    if verbose:
         output = None
-    else: # Suppress stdout from command
+    else:  # Suppress stdout from command
         output = subprocess.PIPE
-    result = subprocess.run(["/usr/sbin/qm", "snapshot", vmid, f"auto_{time}", "--vmstate"], stdout=output)
+
+    if container:
+        cmd = ["/usr/sbin/pct", "snapshot", vmid, f"auto_{time}"]
+    else:
+        cmd = ["/usr/sbin/qm", "snapshot", vmid, f"auto_{time}", "--vmstate"]
+    if verbose:
+        print(f"Running command: '{' '.join(cmd)}'")
+    result = subprocess.run(cmd, stdout=output)
+
     return True if result.returncode == 0 else False
 
 
-
-def prune(vmid, keep_last, keep_minutely, keep_hourly, keep_daily, keep_weekly, keep_monthly, keep_yearly):
+def prune(
+    vmid,
+    container,
+    keep_last,
+    keep_minutely,
+    keep_hourly,
+    keep_daily,
+    keep_weekly,
+    keep_monthly,
+    keep_yearly,
+):
     if verbose:
         print(f"Pruning snapshots of vmid: {vmid}")
-        print(f"keep_last: {keep_last}, keep_minutely: {keep_minutely}, keep_hourly: {keep_hourly}. keep_daily: {keep_daily}, keep_weekly: {keep_weekly}, keep_monthly: {keep_monthly}, keep_yearly: {keep_yearly}")
+        print(
+            f"keep_last: {keep_last}, keep_minutely: {keep_minutely}, keep_hourly: {keep_hourly}. keep_daily: {keep_daily}, keep_weekly: {keep_weekly}, keep_monthly: {keep_monthly}, keep_yearly: {keep_yearly}"
+        )
 
-    raw_snaplist = os.popen("/usr/sbin/qm listsnapshot %s | awk '{print $2, $3, $4}' | head -n -1" % vmid).read().splitlines()
+    cmd = "/usr/sbin/pct" if container else "/usr/sbin/qm"
+    raw_snaplist = (
+        os.popen(f"{cmd} listsnapshot {vmid} | awk '{{print $2, $3, $4}}' | head -n -1")
+        .read()
+        .splitlines()
+    )
     prune_list = []
     for line in raw_snaplist:
-        snap = line.split(' ', 1)
+        snap = line.split(" ", 1)
         prune_list.append(Snapshot(snap[0], snap[1]))
 
     last_ctime = datetime.datetime.fromtimestamp(0)
@@ -219,15 +287,18 @@ def prune(vmid, keep_last, keep_minutely, keep_hourly, keep_daily, keep_weekly, 
                 keep_yearly -= 1
             continue
 
-
     for snap in prune_list:
-        if verbose: print(f"Deleting snapshot: {snap.name()}")
+        if verbose:
+            print(f"Deleting snapshot: {snap.name()}")
         if verbose:
             output = None
-        else: # Suppress stdout from command
+        else:  # Suppress stdout from command
             output = subprocess.PIPE
-        subprocess.run(["/usr/sbin/qm", "delsnapshot", vmid, snap.name()], stdout=output)
 
+        cmd = "/usr/sbin/pct" if container else "/usr/sbin/qm"
+        if verbose:
+            print(f"Running command: '{cmd} delsnapshot {vmid} {snap.name()}'")
+        subprocess.run([cmd, "delsnapshot", vmid, snap.name()], stdout=output)
 
 
 class Snapshot:
@@ -240,5 +311,6 @@ class Snapshot:
 
     def ctime(self):
         return self.time
+
 
 main()

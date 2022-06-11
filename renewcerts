@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-version = "v1.0b"
+version = "v1.1b"
 
 import argparse
 import atexit
@@ -14,8 +14,8 @@ import sys
 # key: (cert_dir, post_cmd)
 platform_parameters = {
     "bookstack": (
-        "/etc/ssl/certs/bookstack",
-        "chown nginx -R /etc/ssl/certs/bookstack && systemctl restart nginx",
+        "/etc/ssl/bookstack",
+        "systemctl restart apache2",
     ),
     "plex": (
         "/etc/ssl/plex",
@@ -65,7 +65,7 @@ def main():
         "--force",
         dest="force",
         action="store_true",
-        help="Force renew certificate",
+        help="force renew certificate",
     )
     parser.add_argument(
         "--version", action="version", version=f"cert renew script {version}"
@@ -108,6 +108,7 @@ def new_certs_available(cert_dir):
 def renew_certs(cert_dir, cmd):
     try:
         execute(f"cp {temporary_cert_dir}/* {cert_dir}")
+        log.msg(f"executing cmd: '{cmd}'")
         execute(cmd)
     except Exception as e:
         log.msg(f"error renewing certs\n{e}")

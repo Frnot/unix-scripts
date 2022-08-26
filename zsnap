@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# v2.5
+# v2.6
 
 from datetime import datetime
 import getopt
@@ -24,6 +24,7 @@ Options
  -M               keep monthly
  -y               keep yearly
  -v               verbose output
+ -n, --dry-run    print list of snapshots that would be pruned using the current settings (do not execute)
  -k, --keep-all   do not prune snapshots
      --help       show help
 """
@@ -49,13 +50,14 @@ verbose = False
 
 def main():
     try:
-        options, remaining_args = getopt.gnu_getopt(sys.argv[1:], "vkm:l:h:d:w:M:y:", ["help","keep-all"])
+        options, remaining_args = getopt.gnu_getopt(sys.argv[1:], "vnkm:l:h:d:w:M:y:", ["help","keep-all","dry-run"])
     except getopt.GetoptError as error:
         print(error)
         sys.exit(2)
 
     keep_last, keep_minutely, keep_hourly, keep_daily, keep_weekly, keep_monthly, keep_yearly = (0,0,0,0,0,0,0)
 
+    dry_run = False
     keep_all = False
     check_arg = True
     for opt, arg in options:
@@ -83,6 +85,8 @@ def main():
         elif opt == '-v':
             global verbose
             verbose = True
+        elif opt in('-n', "--dry-run"):
+            dry_run = True
         elif opt == "--help":
             print(usage)
             print(help)
@@ -118,12 +122,13 @@ def main():
             print(usage)
             return
 
-    take_snapshot(dataset)
+    if not dry_run:
+        take_snapshot(dataset)
 
     if keep_all:
         if verbose: print("Keep all flag set, will not prune snapshots")
     else:
-        prune(dataset, keep_last, keep_minutely, keep_hourly, keep_daily, keep_weekly, keep_monthly, keep_yearly)
+        prune(dataset, keep_last, keep_minutely, keep_hourly, keep_daily, keep_weekly, keep_monthly, keep_yearly, dry_run)
 
 
 def take_snapshot(dataset):
@@ -132,7 +137,7 @@ def take_snapshot(dataset):
     cmd(f"zfs snapshot {dataset}@snap_{time}")
 
 
-def prune(dataset, keep_last, keep_minutely, keep_hourly, keep_daily, keep_weekly, keep_monthly, keep_yearly):
+def prune(dataset, keep_last, keep_minutely, keep_hourly, keep_daily, keep_weekly, keep_monthly, keep_yearly, dry_run):
     if verbose:
         print(f"Pruning snapshots of dataset: {dataset}")
         print(f"keep_last: {keep_last}, keep_minutely: {keep_minutely}, keep_hourly: {keep_hourly}. keep_daily: {keep_daily}, keep_weekly: {keep_weekly}, keep_monthly: {keep_monthly}, keep_yearly: {keep_yearly}")
@@ -194,10 +199,15 @@ def prune(dataset, keep_last, keep_minutely, keep_hourly, keep_daily, keep_weekl
             continue
 
 
-    for snap in prune_list:
-        command = f"zfs destroy {snap.name()}"
-        if verbose: print(f"Executing command '{command}'")
-        cmd(command)
+    if dry_run:
+        print("Snapshots pruned by these settings:")
+        for snap in prune_list:
+            print(snap.name())
+    else:
+        for snap in prune_list:
+            command = f"zfs destroy {snap.name()}"
+            if verbose: print(f"Executing command '{command}'")
+            cmd(command)
 
 
 

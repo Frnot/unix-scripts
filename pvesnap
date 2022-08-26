@@ -2,7 +2,7 @@
 # v0.9
 
 import time
-import datetime
+from datetime import datetime
 import getopt
 import sys
 import os
@@ -190,7 +190,7 @@ def is_container(vmid):
 
 
 def take_snapshot(vmid, container):
-    time = datetime.datetime.now().strftime("%Y_%m_%d__%H_%M_%S")
+    time = datetime.now().isoformat(timespec='seconds')
     if verbose:
         print(f"Taking snapshot of vmid: {vmid} (auto_{time})")
     if verbose:
@@ -237,7 +237,7 @@ def prune(
         snap = line.split(" ", 1)
         prune_list.append(Snapshot(snap[0], snap[1]))
 
-    last_ctime = datetime.datetime.fromtimestamp(0)
+    last_ctime = datetime.fromtimestamp(0)
     for snapshot in reversed(prune_list):
         if keep_last > 0:
             prune_list.remove(snapshot)
@@ -304,7 +304,7 @@ def prune(
 class Snapshot:
     def __init__(self, name, ctime):
         self.snapname = name
-        self.time = datetime.datetime.strptime(ctime, "%Y-%m-%d %H:%M:%S")
+        self.time = datetime.strptime(ctime, "%Y-%m-%d %H:%M:%S")
 
     def name(self):
         return self.snapname

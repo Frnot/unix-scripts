@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-version = "2.4.0b"
+version = "2.4.1b"
 
 # TODO: cleanup within refresh function
 # does canceling a transfer (refresh) leave garbage snapshots on target?
@@ -13,8 +13,8 @@ version = "2.4.0b"
 
 import argparse
 import atexit
+from datetime import datetime
 import fnmatch
-import datetime
 from shutil import which
 import subprocess
 import sys
@@ -30,7 +30,7 @@ Usage: zsync [OPTION] <source dataset> <destination dataset>
 
 
 bookmark_suffix = "zsync_incremental"
-date_time = datetime.datetime.now().strftime("%Y%m%d__%H_%M_%S")
+date_time = datetime.now().isoformat(timespec='seconds')
 ssh = False
 verbose = False
 forse = False
@@ -45,9 +45,7 @@ if quiet:
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description=usage, formatter_class=argparse.RawDescriptionHelpFormatter
-    )
+    parser = argparse.ArgumentParser(description=usage, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("source_dataset")
     parser.add_argument("destination_dataset")
 
@@ -59,7 +57,10 @@ def main():
         help="Send stream to a destination over ssh",
     )
     parser.add_argument(
-        "-v", dest="verbose", action="store_true", help="Enable verbose output"
+        "-v",
+        dest="verbose",
+        action="store_true",
+        help="Enable verbose output"
     )
     parser.add_argument(
         "-f",
@@ -129,34 +130,24 @@ def main():
 
             # if last bookmark and destination dataset exist
             bookmark_exists = bookmark_name in execute(f"zfs list -t bookmark {source}")
-            dest_dataset_exists = destination in execute(
-                ssh_cmd + f"zfs list -r {dest_pool} -o name"
-            )
+            dest_dataset_exists = destination in execute(ssh_cmd + f"zfs list -r {dest_pool} -o name")
 
             if dest_dataset_exists:
                 if bookmark_exists:
-                    rc = refresh(
-                        source, dest_host, destination, snap_name, bookmark_name
-                    )
+                    rc = refresh(source, dest_host, destination, snap_name, bookmark_name)
                 # elif: # TODO - lp: see if a snapshot '@backup' exists, see if it will work
                 # can use zfs diff to compare dest snapshot to source snapshots
                 else:
                     if not force:
-                        elog(
-                            f"Error: dataset '{destination}' exists but no differential information"
-                            + " is available (bookmark missing)\nSupply -f to force overwrite"
-                        )
+                        elog(f"Error: dataset '{destination}' exists but no differential information"
+                            + " is available (bookmark missing)\nSupply -f to force overwrite")
                         continue
                     else:
-                        log(
-                            f"Dataset '{destination}' exists but no differential information"
-                            + " is available (bookmark missing)\nWill overwrite"
-                        )
+                        log(f"Dataset '{destination}' exists but no differential information"
+                            + " is available (bookmark missing)\nWill overwrite")
                         vlog(f"Destroying destination dataset '{destination}'")
                         execute(ssh_cmd + f"zfs destroy -r {destination}")
-                        rc = init(
-                            source, dest_host, destination, snap_name, bookmark_name
-                        )
+                        rc = init(source, dest_host, destination, snap_name, bookmark_name)
             else:
                 if bookmark_exists:
                     log(f"Bookmark '{bookmark_name}' exists but its dataset is missing")
@@ -180,16 +171,8 @@ def check_destination(dest_host, destination):
 
     ssh_cmd = f"ssh {dest_host} " if ssh else ""
 
-    imported = [
-        pool
-        for pool in execute(ssh_cmd + "zpool list -o name").splitlines()
-        if pool != "NAME"
-    ]
-    exported = [
-        pool.split(": ")[1]
-        for pool in execute(ssh_cmd + "zpool import").splitlines()
-        if "pool:" in pool
-    ]
+    imported = [pool for pool in execute(ssh_cmd + "zpool list -o name").splitlines() if pool != "NAME"]
+    exported = [pool.split(": ")[1] for pool in execute(ssh_cmd + "zpool import").splitlines() if "pool:" in pool]
 
     dest_pool = destination.split("/")[0]
 
@@ -252,9 +235,7 @@ def init(source, dest_host, destination, snap_name, bookmark_name):
         if rc == 0:
             return 0
         else:
-            elog(
-                f"Error converting snapshot '{snap_name}' into bookmark '{bookmark_name}'"
-            )
+            elog(f"Error converting snapshot '{snap_name}' into bookmark '{bookmark_name}'")
             return 2
     else:  # if the command failed, delete the orphaned snapshot
         elog(f"Error: ZFS send failed")
@@ -280,9 +261,7 @@ def refresh(source, dest_host, destination, snap_name, bookmark_name):
                 if snap_suffix in execute(f"zfs list -t snapshot {source}"):
                     log(f"Rolling back '{destination}' to snapshot '{dest_snap}'")
                     execute(ssh_cmd + f"zfs rollback -rf {dest_snap}")
-                    log(
-                        f"Sending incremental snapshot '{snap_name}' to '{destination}'"
-                    )
+                    log(f"Sending incremental snapshot '{snap_name}' to '{destination}'")
                     success = send_recv(snap_name, source_snap, destination, dest_host)
                     if success:
                         break
@@ -371,9 +350,7 @@ def send_recv(snap_name, bookmark_name, destination, dest_host):
 
 
 def list_snapshots(dataset):
-    snaplist = execute(
-        f"zfs list -t snapshot -s creation -o name {dataset}"
-    ).splitlines()
+    snaplist = execute(f"zfs list -t snapshot -s creation -o name {dataset}").splitlines()
     if snaplist:
         del snaplist[0]  # remove header from list
         snaplist.reverse()  # most recent first

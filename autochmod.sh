@@ -1,5 +1,5 @@
 #!/bin/bash
-# v1.0
+# v1.1
 
 # This script requires inotify-tools
 # apt install inotify-tools
@@ -10,7 +10,7 @@
 #### /etc/systemd/system/autochmod.service ###
 : <<'END'
 [Unit]
-Description= Automatically sets the permissions of sshfs systems
+Description= Automatic permission handler
 
 [Service]
 Type=simple

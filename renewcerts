@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-version = "v1.1b"
+version = "v1.2b"
 
 import argparse
 import atexit
@@ -123,7 +123,7 @@ def pull_certs(cert_server):
         log.msg(f"executing command: 'sftp {cert_server}:* {temporary_cert_dir}'")
         execute(f"sftp {cert_server}:* {temporary_cert_dir}")
     except Exception as e:
-        log.msg(f"Error downloading certificate files\n{e}")
+        log.msg(f"Error downloading certificate files:\n{e}")
         exit()
 
 
@@ -133,13 +133,14 @@ def cleanup():
 
 
 def execute(command):
+    # shell=True needed for Bash globbing
     result = subprocess.run(command, shell=True)
 
-    if result.stdout is not None:
+    if result.stdout:
         log.msg(result.stdout)
 
     if result.returncode != 0:
-        raise SystemError
+        raise RuntimeError(result.stderr)
 
 
 class Log:

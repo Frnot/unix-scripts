@@ -4,13 +4,7 @@ import re
 from shutil import which
 import subprocess
 
-try:
-    import segno
-except ModuleNotFoundError:
-    import sys
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "segno"])
-    import segno
-
+# Requires: segno
 
 server_address = ""
 server_pubkey = ""
@@ -22,6 +16,8 @@ dns = ["fddd::1", "10.0.221.1"]
 routed_nets = [""]
 
 def main():
+    autoinstall("segno")
+
     # Check that required program exists
     if which("wg") is None:
         print("Error: command 'wg' is not found. Is wireguard installed?")
@@ -109,4 +105,21 @@ def execute(command, input=None, return_rc=False):
     else:
         return result.stdout.strip()
 
-main()
+
+def autoinstall(package):
+    import importlib
+    try:
+        globals()[package] = importlib.import_module(package)
+    except ModuleNotFoundError as missing_pkg:
+        inp = input(f"Package '{missing_pkg.name}' required. Install it now? (y/N): ")
+        if "y" in inp.lower():
+            import sys, subprocess
+            subprocess.check_call([sys.executable, "-m", "pip", "install", missing_pkg.name])
+            print("\n")
+            globals()[package] = importlib.import_module(package)
+        else:
+            quit()
+
+
+if __name__ == "__main__":
+    main()

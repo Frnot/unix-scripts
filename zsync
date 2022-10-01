@@ -37,12 +37,6 @@ forse = False
 quiet = not sys.stdout.isatty()
 
 
-# testing quiet feature for crontab
-# TODO: remove
-if quiet:
-    with open("/tmp/crontest.txt", "a") as f:
-        print(f"{date_time} executing zsync in cron", file=f)
-
 
 def main():
     parser = argparse.ArgumentParser(description=usage, formatter_class=argparse.RawDescriptionHelpFormatter)

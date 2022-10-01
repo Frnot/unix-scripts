@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-version = "2.4.1b"
+version = "2.4.2"
 
 # TODO: cleanup within refresh function
 # does canceling a transfer (refresh) leave garbage snapshots on target?
@@ -36,12 +36,6 @@ verbose = False
 forse = False
 quiet = not sys.stdout.isatty()
 
-
-# testing quiet feature for crontab
-# TODO: remove
-if quiet:
-    with open("/tmp/crontest.txt", "a") as f:
-        print(f"{date_time} executing zsync in cron", file=f)
 
 
 def main():

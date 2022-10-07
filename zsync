@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-version = "2.4.3"
+version = "2.4.4"
 
 # TODO: cleanup within refresh function
 # does canceling a transfer (refresh) leave garbage snapshots on target?
@@ -186,10 +186,10 @@ def check_destination(dest_host, destination):
         for pool in im_match:
             log(f"Note: zpool '{pool}' was already mounted")
 
-        if not im_match or not ex_match:
-            elog(f"Error: no valid substitutions for '{dest_pool}' exist")
+        if im_match or ex_match:
+            return im_match, ex_match
         
-        return im_match, ex_match
+        elog(f"Error: no valid substitutions for '{dest_pool}' exist")
 
     else:  # not checking wildcard
         if dest_pool in imported:

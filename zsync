@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-version = "2.4.2"
+version = "2.4.3"
 
 # TODO: cleanup within refresh function
 # does canceling a transfer (refresh) leave garbage snapshots on target?
@@ -31,9 +31,6 @@ Usage: zsync [OPTION] <source dataset> <destination dataset>
 
 bookmark_suffix = "zsync_incremental"
 date_time = datetime.now().isoformat(timespec='seconds')
-ssh = False
-verbose = False
-forse = False
 quiet = not sys.stdout.isatty()
 
 
@@ -104,10 +101,10 @@ def main():
 
     try:
         # check that destination dataset(s) exist
-        pools_to_sync = check_destination(dest_host, destination)
+        imported, exported = check_destination(dest_host, destination)
+        pools_to_sync = imported + exported
         dest_path = destination.split("/", 1)[1]  # destination without pool
         snap_name = f"{source}@backup_{date_time}"
-        atexit.register(export, pools_to_sync, dest_host)
 
         vlog(f"Snapshotting source: '{snap_name}'")
         execute(f"zfs snapshot {snap_name}")
@@ -115,6 +112,11 @@ def main():
 
         vlog(f"Syncing to pools: {pools_to_sync} - Remote host: '{dest_host}'")
         for dest_pool in pools_to_sync:
+            # if pool currently exported, import it
+            if dest_pool in exported:
+                import_pool(dest_pool, dest_host)
+                atexit.register(export_pool, dest_pool, dest_host)
+
             destination = f"{dest_pool}/{dest_path}"
             formatted_dest = destination.replace("/", "_")
             bookmark_name = f"{source}#{formatted_dest}-{bookmark_suffix}"
@@ -154,6 +156,11 @@ def main():
             if rc == 2:
                 atexit.unregister(delete_snapshot)
 
+            # if pool was exported initially, return it how we found it
+            if dest_pool in exported:
+                export_pool(dest_pool, dest_host)
+                atexit.unregister(export_pool)
+
     except KeyboardInterrupt:
         log("Terminating zsync")
         log("Cleanup up")
@@ -179,29 +186,20 @@ def check_destination(dest_host, destination):
         for pool in im_match:
             log(f"Note: zpool '{pool}' was already mounted")
 
-        for pool in ex_match:
-            vlog(f"Importing pool '{pool}'")
-            rc = execute(ssh_cmd + f"zpool import {pool}", return_rc=True)
-            if rc == 0:
-                im_match.append(pool)
-
-        if im_match:
-            return im_match
-        else:
+        if not im_match or not ex_match:
             elog(f"Error: no valid substitutions for '{dest_pool}' exist")
+        
+        return im_match, ex_match
 
     else:  # not checking wildcard
         if dest_pool in imported:
             log(f"Note: zpool '{dest_pool}' was already mounted")
-            return [dest_pool]
+            return [dest_pool], None
         elif dest_pool in exported:
-            vlog(f"Importing pool '{pool}'")
-            rc = execute(ssh_cmd + f"zpool import {pool}", return_rc=True)
-
-            if rc == 0:
-                return [dest_pool]
-            else:
-                elog(f"Error: destination pool '{dest_pool}' does not exist")
+            return [dest_pool], None
+        else:
+            elog(f"Error: destination pool '{dest_pool}' does not exist")
+            
 
     if ":" in destination:
         log("Did you mean to specify ssh (-s)?")
@@ -343,12 +341,33 @@ def send_recv(snap_name, bookmark_name, destination, dest_host):
     return p3.returncode == 0
 
 
+def import_pool(pool, dest_host):
+    ssh_cmd = f"ssh {dest_host} " if dest_host is not None else ""
+    logappend = f" on host '{dest_host}'" if dest_host is not None else ""
+    vlog(f"Importing pool '{pool}'" + logappend)
+    rc = execute(ssh_cmd + f"zpool import {pool}", return_rc=True)
+    if rc != 0:
+        elog(f"Error importing pool: '{pool}'")
+
+
+def export_pool(pool, dest_host):
+    ssh_cmd = f"ssh {dest_host} " if dest_host is not None else ""
+    logappend = f" on host '{dest_host}'" if dest_host is not None else ""
+    vlog(f"Exporting pool '{pool}'" + logappend)
+    execute(ssh_cmd + f"zpool export {pool}")
+
+
 def list_snapshots(dataset):
     snaplist = execute(f"zfs list -t snapshot -s creation -o name {dataset}").splitlines()
     if snaplist:
         del snaplist[0]  # remove header from list
         snaplist.reverse()  # most recent first
     return snaplist  # trim garbage
+
+
+def delete_snapshot(snap_name):
+    vlog(f"Deleting source snapshot '{snap_name}'")
+    execute(f"zfs destroy {snap_name}")
 
 
 def log(message):
@@ -363,22 +382,5 @@ def vlog(message):
 
 def elog(message):
     print(f"{date_time} {message}")
-
-
-## Cleanup Functions #########
-
-
-def export(pool_list, dest_host):
-    ssh_cmd = f"ssh {dest_host} " if dest_host is not None else ""
-    logappend = f" on host '{dest_host}'" if dest_host is not None else ""
-    for pool in pool_list:
-        vlog(f"Exporting pool '{pool}'" + logappend)
-        execute(ssh_cmd + f"zpool export {pool}")
-
-
-def delete_snapshot(snap_name):
-    vlog(f"Deleting source snapshot '{snap_name}'")
-    execute(f"zfs destroy {snap_name}")
-
 
 main()

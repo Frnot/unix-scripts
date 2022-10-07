@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-version = "2.4.5"
+version = "2.5.0"
 
 # TODO: cleanup within refresh function
 # does canceling a transfer (refresh) leave garbage snapshots on target?
@@ -13,12 +13,11 @@ version = "2.4.5"
 
 import argparse
 import atexit
-from datetime import datetime
 import fnmatch
-from shutil import which
 import subprocess
 import sys
-
+from datetime import datetime
+from shutil import which
 
 usage = f"""
 zsync version: {version}
@@ -102,7 +101,6 @@ def main():
     try:
         # check that destination dataset(s) exist
         imported, exported = check_destination(dest_host, destination)
-        pools_to_sync = imported + exported
         dest_path = destination.split("/", 1)[1]  # destination without pool
         snap_name = f"{source}@backup_{date_time}"
 
@@ -110,13 +108,10 @@ def main():
         execute(f"zfs snapshot {snap_name}")
         atexit.register(delete_snapshot, snap_name)
 
-        vlog(f"Syncing to pools: {pools_to_sync} - Remote host: '{dest_host}'")
-        for dest_pool in pools_to_sync:
-            # if pool currently exported, import it
-            if dest_pool in exported:
-                atexit.register(export_pool, dest_pool, dest_host)
-                import_pool(dest_pool, dest_host)
-
+        vlog(f"Syncing to pools: {imported + exported} - Remote host: '{dest_host}'")
+        
+        # context generator handles importing and exporting pools automatically
+        for dest_pool in pool_manager(imported, exported, dest_host):
             destination = f"{dest_pool}/{dest_path}"
             formatted_dest = destination.replace("/", "_")
             bookmark_name = f"{source}#{formatted_dest}-{bookmark_suffix}"
@@ -155,11 +150,6 @@ def main():
             # RC: 0 success, 1 failure, 2 failure converting snapshot
             if rc == 2:
                 atexit.unregister(delete_snapshot)
-
-            # if pool was exported initially, return it how we found it
-            if dest_pool in exported:
-                export_pool(dest_pool, dest_host)
-                atexit.unregister(export_pool)
 
     except KeyboardInterrupt:
         log("\nTerminating zsync")
@@ -341,6 +331,17 @@ def send_recv(snap_name, bookmark_name, destination, dest_host):
     return p3.returncode == 0
 
 
+def pool_manager(imported, exported, dest_host):
+    for pool in exported:
+        try:
+            import_pool(pool, dest_host)
+            yield pool
+        finally:
+            export_pool(pool, dest_host)
+    for pool in imported:
+        yield pool
+
+
 def import_pool(pool, dest_host):
     ssh_cmd = f"ssh {dest_host} " if dest_host is not None else ""
     logappend = f" on host '{dest_host}'" if dest_host is not None else ""
@@ -386,5 +387,6 @@ def vlog(message):
 
 def elog(message):
     print(f"{date_time} {message}")
+
 
 main()

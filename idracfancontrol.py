@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-version="1.0"
+version="1.1"
 
 # control the idrac fans automatically using a PID controller
 # in its finaly state, this program will hopefully be implemented in c++
@@ -43,6 +43,8 @@ def main():
         print("Error: you need to have ipmitool installed")
         print("dnf/apt install ipmitool")
         return
+
+    execute("ipmitool raw 0x30 0x30 0x01 0x00")
 
     try:
         last_sample_time = time.time()
@@ -104,7 +106,7 @@ def calculate_I(error, elapsed_time):
         total = 50/Ki
     elif total*Ki < 0:
         total = 0
-    
+
     return total*Ki
 
 
@@ -125,12 +127,16 @@ def calculate_D(error, elapsed_time):
 
     rate_error = (error - previous_diff_error) / time_since_previous_error
     previous_error = error
-    
+
     return Kd*rate_error
 
 
+last_speed = 0
 def set_fan_speed(speed):
-    execute(f"ipmitool raw 0x30 0x30 0x02 0xff {hex(speed)}")
+    global last_speed
+    if speed != last_speed:
+        execute(f"ipmitool raw 0x30 0x30 0x02 0xff {hex(speed)}")
+    last_speed = speed
 
 
 def get_fan_speed():

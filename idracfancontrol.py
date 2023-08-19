@@ -11,18 +11,18 @@ version="1.1"
 # enable it with: systemctl enable --now idracfancontrol.service
 
 #### /etc/systemd/system/idracfancontrol.service ###
-#
-# [Unit]
-# Description=iDRAC fan control system
-#
-# [Service]
-# Type=simple
-# ExecStart=/usr/bin/idracfancontrol.py
-# Restart=always
-#
-# [Install]
-# WantedBy=multi-user.target
-#
+"""
+[Unit]
+Description=iDRAC fan control system
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/idracfancontrol.py
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+"""
 ####################################################
 
 import subprocess

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-version="1.1"
+version="1.2"
 
 # control the idrac fans automatically using a PID controller
 # in its final state, this program will hopefully be implemented in c++
@@ -27,6 +27,7 @@ WantedBy=multi-user.target
 
 import subprocess
 import time
+import re
 from shutil import which
 
 
@@ -36,7 +37,9 @@ Kp = 2
 Ki = 0.01
 Kd = 5
 
-idrac_control = False
+idrac_has_control = False
+
+fan_regex = re.compile(r"fan\d", flags=re.IGNORECASE)
 
 def main():
     if which("ipmitool") is None:
@@ -44,6 +47,7 @@ def main():
         print("dnf/apt install ipmitool")
         return
 
+    # Take fan cotnrol from idrac
     execute("ipmitool raw 0x30 0x30 0x01 0x00")
 
     try:
@@ -141,12 +145,8 @@ def set_fan_speed(speed):
 
 def get_fan_speed():
     rawstring = execute("ipmitool sdr type fan")
-    stringlines = [line for line in rawstring.split('\n') if line and not line.startswith("Fan Redundancy")]
-    fan_avg = 0
-    for line in stringlines:
-        speed = int(line.split("|")[4].strip().split(" ")[0])
-        fan_avg += speed
-    fan_avg /= len(stringlines)
+    speeds = [int(line.split("|")[4].strip().split(" ")[0]) for line in rawstring.split('\n') if line and fan_regex.match(line)]
+    fan_avg = sum(speeds) / len(speeds)
     return fan_avg
 
 
@@ -155,37 +155,38 @@ def get_temps():
 
     stringlines = [line for line in rawstring.split('\n') if line]
 
-    ambient = stringlines[0].split("|")[4].strip().split(" ")[0]
-    if ambient == "No":
-        print("bad data from ipmi!!!")
-        print(rawstring)
-        return None
-    cpu = 0
-    for line in stringlines[1:]:
+    ambient = []
+    cpu = []
+    for line in stringlines:
         temp = line.split("|")[4].strip().split(" ")[0]
         if temp == "No":
             print("bad data from ipmi!!!!")
             print(rawstring)
             return None
-        cpu += int(temp)
-    cpu /= len(stringlines[1:])
+        if "inlet" in line.lower():
+            ambient.append(int(temp))
+        else: # "inlet" not in line
+            cpu.append(int(temp))
+
+    ambient = sum(ambient) / len(ambient)
+    cpu = sum(cpu) / len(cpu)
 
     return int(ambient), int(cpu)
 
 
 def idrac_handoff(cpu_temp):
-    global idrac_control
+    global idrac_has_control
     if cpu_temp > 90:
-        if not idrac_control:
+        if not idrac_has_control:
             print("Temperature overlimit! releasing fan control to idrac")
             execute("ipmitool raw 0x30 0x30 0x01 0x01")
-            idrac_control = True
+            idrac_has_control = True
     else:
-        if idrac_control:
+        if idrac_has_control:
             print("Temperature in acceptable range. taking fan control from idrac")
             execute("ipmitool raw 0x30 0x30 0x01 0x00")
-            idrac_control = False
-    return idrac_control
+            idrac_has_control = False
+    return idrac_has_control
 
 
 def execute(command):

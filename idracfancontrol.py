@@ -3,7 +3,7 @@
 version="1.1"
 
 # control the idrac fans automatically using a PID controller
-# in its finaly state, this program will hopefully be implemented in c++
+# in its final state, this program will hopefully be implemented in c++
 
 # This script requires ipmitool
 # dnf/apt install ipmitool

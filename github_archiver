@@ -1,8 +1,5 @@
 #!/bin/bash
-#v0.1
-
-# Requires gh
-# Sign in to GitHub with `gh auth login`
+#v0.2
 
 gh repo list | while read -r repo _; do
   DEST_DIR="$1"/$(basename "$repo")
@@ -11,10 +8,11 @@ gh repo list | while read -r repo _; do
   gh repo clone "$repo" "$1"/$(basename "$repo") 2>/dev/null|| (
     cd "$DEST_DIR"
     # Handle case where local checkout is on a non-main/master branch
-    # - ignore checkout errors because some repos may have zero commits,
+    # - ignore checkout errors because some repos may have zero commits, 
     # so no main or master
     git checkout main 2>/dev/null || true
     git checkout master 2>/dev/null || true
+    git reset --hard
     git pull
   )
 done

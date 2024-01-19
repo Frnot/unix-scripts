@@ -1,6 +1,9 @@
 #!/bin/bash
 #v0.2
 
+# Requires gh
+# Sign in to GitHub with `gh auth login`
+
 gh repo list | while read -r repo _; do
   DEST_DIR="$1"/$(basename "$repo")
   echo "Cloning $repo to $DEST_DIR"

@@ -35,7 +35,7 @@ See: https://pbs.proxmox.com/docs/prune-simulator/ for a handy simulator.
 keep last <N>
     Keep the last <N> backup snapshots.
 keep minutely <N>
-    Keep backups for the last <N> minutess. If there is more than one backup for a single minute, only the latest is kept.
+    Keep backups for the last <N> minutes. If there is more than one backup for a single minute, only the latest is kept.
 keep hourly <N>
     Keep backups for the last <N> hours. If there is more than one backup for a single hour, only the latest is kept.
 keep daily <N>

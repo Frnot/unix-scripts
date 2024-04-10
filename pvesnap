@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# v1.1
+# v1.2
 
 import time
 from datetime import datetime
@@ -29,12 +29,13 @@ Options
      --help       show help"""
 
 help = """
-the prune options work a lot like the proxmox backup retention options
+The prune options work a lot like the proxmox backup retention options.
+See: https://pbs.proxmox.com/docs/prune-simulator/ for a handy simulator.
 
 keep last <N>
     Keep the last <N> backup snapshots.
 keep minutely <N>
-    Keep backups for the last <N> hours. If there is more than one backup for a single hour, only the latest is kept.
+    Keep backups for the last <N> minutess. If there is more than one backup for a single minute, only the latest is kept.
 keep hourly <N>
     Keep backups for the last <N> hours. If there is more than one backup for a single hour, only the latest is kept.
 keep daily <N>
@@ -48,6 +49,8 @@ keep yearly <N>
 
 To snapshot all running VMs automatically, calculated your desired options and then put the following line in the root crontab:
 "/usr/sbin/qm list | tail -n+2 | grep "running" | awk '{print $1}' | xargs -I vmid pvesnap vmid <options>"
+For all running containers:
+"/usr/sbin/pct list | tail -n+2 | grep "running" | awk '{print $1}' | xargs -I vmid pvesnap vmid <options>"
 """
 
 

@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 
-version="1.2"
+version="1.3"
 
 # control the idrac fans automatically using a PID controller
-# in its final state, this program will hopefully be implemented in c++
 
 # This script requires ipmitool
 # dnf/apt install ipmitool
@@ -19,20 +18,22 @@ Description=iDRAC fan control system
 Type=simple
 ExecStart=/usr/bin/idracfancontrol.py
 Restart=always
+KillSignal=SIGINT
+TimeoutStopSec=3
 
 [Install]
 WantedBy=multi-user.target
 """
 ####################################################
 
+import atexit
+import re
 import subprocess
 import time
-import re
 from shutil import which
 
-
 # tuning parameters
-target_tdelta = 50  # degrees
+target_tdelta = 30  # degrees
 Kp = 2
 Ki = 0.01
 Kd = 5
@@ -46,6 +47,8 @@ def main():
         print("Error: you need to have ipmitool installed")
         print("dnf/apt install ipmitool")
         return
+
+    atexit.register(exit)
 
     # Take fan cotnrol from idrac
     execute("ipmitool raw 0x30 0x30 0x01 0x00")
@@ -112,7 +115,6 @@ def calculate_I(error, elapsed_time):
         total = 0
 
     return total*Ki
-
 
 
 previous_error = 0
@@ -193,6 +195,17 @@ def execute(command):
     cmdarr = command.split()
     result = subprocess.run(cmdarr, text=True, capture_output=True)
     return result.stdout
+
+
+def exit():
+    # Return control to idrac so system doesn't overheat during soft reboots
+    execute("ipmitool raw 0x30 0x30 0x01 0x01")
+
+    # temporary debug
+    from datetime import datetime
+    with open("/idrac_debug.txt", "a") as df:
+        date = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+        df.write(f"{date} :: Shutting down idracfancontrol\n")
 
 
 if __name__ == "__main__":

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# v2.6
+# v2.7
 
 from datetime import datetime
 import getopt
@@ -133,8 +133,8 @@ def main():
 
 def take_snapshot(dataset):
     time = datetime.now().isoformat(timespec='seconds')
-    if verbose: print(f"Taking snapshot of dataset: {dataset}@snap_{time}")
-    cmd(f"zfs snapshot {dataset}@snap_{time}")
+    if verbose: print(f"Taking snapshot of dataset: {dataset}@zsnap::{time}")
+    cmd(f"zfs snapshot {dataset}@zsnap::{time}")
 
 
 def prune(dataset, keep_last, keep_minutely, keep_hourly, keep_daily, keep_weekly, keep_monthly, keep_yearly, dry_run):
@@ -142,11 +142,11 @@ def prune(dataset, keep_last, keep_minutely, keep_hourly, keep_daily, keep_weekl
         print(f"Pruning snapshots of dataset: {dataset}")
         print(f"keep_last: {keep_last}, keep_minutely: {keep_minutely}, keep_hourly: {keep_hourly}. keep_daily: {keep_daily}, keep_weekly: {keep_weekly}, keep_monthly: {keep_monthly}, keep_yearly: {keep_yearly}")
 
-    raw_snaplist = os.popen("zfs get -Hp creation -t snapshot %s | awk '{ print $1, $3 }'" % dataset).read().splitlines()
+    raw_snaplist = os.popen(f"zfs get -Hp creation -t snapshot -o name,value {dataset}").read().splitlines()
     prune_list = []
     for line in raw_snaplist:
-        snap = line.split(' ')
-        prune_list.append(Snapshot(snap[0], snap[1]))
+        snapname, ctime = line.split()
+        prune_list.append(Snapshot(snapname, ctime))
 
     last_ctime = datetime.fromtimestamp(0)
     for snapshot in reversed(prune_list):

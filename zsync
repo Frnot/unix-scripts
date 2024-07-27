@@ -1,21 +1,19 @@
 #!/usr/bin/env python3
 
-version = "2.7.0"
+version = "3.0.0b3"
 
 # TODO: cleanup within refresh function
 # does canceling a transfer (refresh) leave garbage snapshots on target?
 
-# TODO: make sure ssh has access to destination host
 # TODO: implement resuming
 
-# Low Prior
-# TODO: add ssh source support (if zfs supports it)
 
 import argparse
 import atexit
 import fnmatch
 import subprocess
 import sys
+import time
 from datetime import datetime
 from shutil import which
 
@@ -25,11 +23,11 @@ Uses ZFS send/receive to sync a ZFS filesystem between source and destination\n
 
 Usage: zsync [OPTION] <source dataset> <destination dataset>
  or    zsync <-s | -ssh> <source dataset> [<USER>@]<HOST>:<destination dataset>
+ or    zsync <-s | -ssh> [<USER>@]<HOST>:<source dataset> <destination dataset>
 """
 
 
 bookmark_suffix = "zsync_incremental"
-date_time = datetime.now().isoformat(timespec='seconds')
 quiet = not sys.stdout.isatty()
 
 
@@ -39,13 +37,6 @@ def main():
     parser.add_argument("source_dataset")
     parser.add_argument("destination_dataset")
 
-    parser.add_argument(
-        "-s",
-        "--ssh",
-        dest="ssh",
-        action="store_true",
-        help="Send stream to a destination over ssh",
-    )
     parser.add_argument(
         "-v",
         dest="verbose",
@@ -71,217 +62,143 @@ def main():
 
     args = parser.parse_args()
 
-    source = args.source_dataset
-    destination = args.destination_dataset
-    global ssh
-    ssh = args.ssh
     global verbose
     verbose = args.verbose
     global force
     force = args.force
-    dest_host = None
-    ssh_cmd = ""
 
-    # Check that required programs exist on destination machine
-    if which("zfs") is None:
-        log("Error: zfs: command not found.")
-        exit(2)
-    # TODO: check for zfs command on target host (ssh)
+    src = Source(args.source_dataset)
+    dest = Destination(args.destination_dataset)
 
-    # check that source dataset exists
-    if source not in execute("zfs list"):
-        log(f"Error: source dataset '{source}' does not exist")
-        exit(2)
+    check_req_apps(src, dest, ["zfs"])
 
-    if ssh:
-        dest_host = destination.split(":")[0]
-        destination = destination.split(":")[1]
-        ssh_cmd = f"ssh {dest_host} "
+    for pool, dest_path in dest.pool_manager():
+        snap_name = src.snapshot()
+        success = sync(src, dest, pool, dest_path, snap_name)
+        if success:
+            vlog("Sync Succeeded")
+            src.bookmark(snap_name, dest, dest_path)
+        else:
+            vlog("Sync Failed")
+            src.delete_snapshot(snap_name)
 
 
-    # check that destination dataset(s) exist
-    imported, exported = check_destination(dest_host, destination)
-    dest_path = destination.split("/", 1)[1]  # destination without pool
-    snap_name = f"{source}@backup_{date_time}"
 
-    vlog(f"Snapshotting source: '{snap_name}'")
-    execute(f"zfs snapshot {snap_name}")
-    atexit.register(delete_snapshot, snap_name)
+def check_req_apps(source, destination, required_apps):
+    # Check that required programs exist
+    for app in required_apps:
+        if not (source.ssh and destination.ssh):
+            if which(app) is None:
+                elog(f"{app}: command not found.")
+                exit(2)
+        if source.ssh:
+            if not execute(f"{source.ssh_cmd} which {app}"):
+                elog(f"on {source.remote_host}: {app}: command not found.")
+                exit(2)
+        if destination.ssh:
+            if not execute(f"{destination.ssh_cmd} which {app}"):
+                elog(f"on {destination.remote_host}: {app}: command not found.")
+                exit(2)
 
-    vlog(f"Syncing to pools: {imported + exported} - Remote host: '{dest_host}'")
-    
-    # context generator handles importing and exporting pools automatically
-    for dest_pool in pool_manager(imported, exported, dest_host):
-        try:            
-            destination = f"{dest_pool}/{dest_path}"
-            formatted_dest = destination.replace("/", "_")
-            bookmark_name = f"{source}#{formatted_dest}-{bookmark_suffix}"
 
-            log(f"Syncing destination '{destination}'")
-            vlog(f"Bookmark name: '{bookmark_name}'")
+def sync(source, destination, dest_pool, dest_path, snap_name):
+    formatted_dest = dest_path.replace("/", "_")
+    undated_bookmark_name = f"{source.zfs_path}#{destination.remote_host}:{formatted_dest}"
 
-            # if last bookmark and destination dataset exist
-            bookmark_exists = bookmark_name in execute(f"zfs list -t bookmark {source}")
-            dest_dataset_exists = destination in execute(ssh_cmd + f"zfs list -r {dest_pool} -o name")
+    log(f"Syncing destination '{dest_path}'")
+    dest_dataset_exists = dest_path in execute(f"{destination.ssh_cmd} zfs list -r {dest_pool} -o name")
 
-            if dest_dataset_exists:
-                if bookmark_exists:
-                    rc = refresh(source, dest_host, destination, snap_name, bookmark_name)
-                # elif: # TODO - lp: see if a snapshot '@backup' exists, see if it will work
-                # can use zfs diff to compare dest snapshot to source snapshots
-                else:
-                    if not force:
-                        elog(f"Error: dataset '{destination}' exists but no differential information"
-                            + " is available (bookmark missing)\nSupply -f to force overwrite")
-                        continue
-                    else:
-                        log(f"Dataset '{destination}' exists but no differential information"
-                            + " is available (bookmark missing)\nWill overwrite")
-                        vlog(f"Destroying destination dataset '{destination}'")
-                        execute(ssh_cmd + f"zfs destroy -r {destination}")
-                        rc = init(source, dest_host, destination, snap_name, bookmark_name)
+    # find bookmark on source that matches destination
+    matching_bookmark = None
+    matching_dest_snapshot = None
+    if bookmarks := list_bookmarks(source.ssh_cmd, source.zfs_path):
+        if matching_bookmarks := [b for b in bookmarks if undated_bookmark_name in b]:
+            # select newest bookmark and delete all duplicates
+            matching_bookmark = matching_bookmarks[0]
+            vlog(f"Found matching bookmark: {matching_bookmark}")
+            for old_bookmark in matching_bookmarks[1:]:
+                vlog(f"Destroying old bookmark: {old_bookmark}")
+                execute(f"zfs destroy {old_bookmark}")
+
+            # find snapshot on destination with same datetime as matching bookmark
+            bookmark_datetime = matching_bookmark.split("::")[1]
+            snapshots = list_snapshots(destination.ssh_cmd, dest_path)
+            if matching_dest_snapshots := [s for s in snapshots if bookmark_datetime in s]:
+                matching_dest_snapshot = matching_dest_snapshots[0]
+                vlog(f"Found matching snapshot on destination: {matching_dest_snapshot}")
+                if snapshots[0] != matching_dest_snapshot:
+                    vlog("There are more recent snapshots on destination. Deleting")
+                    for snapshot in snapshots:
+                        if snapshot == matching_dest_snapshot:
+                            break
+                        source.delete_snapshot(snapshot)
             else:
-                if bookmark_exists:
-                    log(f"Bookmark '{bookmark_name}' exists but its dataset is missing")
-                    log("Destroying bookmark")
-                    execute(ssh_cmd + f"zfs destroy {bookmark_name}")
+                vlog(f"Could not find snapshot on destination with datetime of {bookmark_datetime}")
 
-                rc = init(source, dest_host, destination, snap_name, bookmark_name)
-
-            # RC: 0 success, 1 failure, 2 failure converting snapshot
-            if rc == 2:
-                atexit.unregister(delete_snapshot)
-
-        except KeyboardInterrupt:
-            log("\nTerminating zsync")
-            log("Cleaning up")
-            raise SystemExit
-
-
-def check_destination(dest_host, destination):
-    wildcards = ["?", "*"]
-
-    ssh_cmd = f"ssh {dest_host} " if ssh else ""
-
-    imported = [pool for pool in execute(ssh_cmd + "zpool list -o name").splitlines() if pool != "NAME"]
-    exported = [pool.split(": ")[1] for pool in execute(ssh_cmd + "zpool import").splitlines() if "pool:" in pool]
-
-    dest_pool = destination.split("/")[0]
-
-    if [wildcard in dest_pool for wildcard in wildcards]:
-        vlog("Checking wildcards")
-
-        im_match = fnmatch.filter(imported, dest_pool)
-        ex_match = fnmatch.filter(exported, dest_pool)
-
-        for pool in im_match:
-            log(f"Note: zpool '{pool}' was already mounted")
-
-        if im_match or ex_match:
-            return im_match, ex_match
-        
-        elog(f"Error: no valid substitutions for '{dest_pool}' exist")
-
-    else:  # not checking wildcard
-        if dest_pool in imported:
-            log(f"Note: zpool '{dest_pool}' was already mounted")
-            return [dest_pool], None
-        elif dest_pool in exported:
-            return [dest_pool], None
+    try:
+        if dest_dataset_exists:
+            if matching_bookmark and matching_dest_snapshot:
+                return refresh(source, snap_name, matching_bookmark, destination, dest_path)
+            else:
+                if not force:
+                    elog(f"destination dataset '{dest_path}' exists but no differential information "
+                         "is available (bookmark missing).\nSupply -f to force overwrite")
+                    return False
+                else:
+                    log(f"Destination dataset '{dest_path}' exists but no differential information "
+                        "is available (bookmark missing)\nWill overwrite")
+                    vlog(f"Destroying destination dataset '{dest_path}'")
+                    execute(f"{destination.ssh_cmd} zfs destroy -r {dest_path}", return_rc=True)
+                    return init(source, snap_name, destination, dest_path)
         else:
-            elog(f"Error: destination pool '{dest_pool}' does not exist")
-            
+            if matching_bookmark:
+                log(f"Bookmark '{matching_bookmark}' exists but its dataset is missing")
+                log("Destroying bookmark")
+                execute(f"{source.ssh-cmd} zfs destroy {matching_bookmark}")
 
-    if ":" in destination:
-        log("Did you mean to specify ssh (-s)?")
-    exit(2)
+            return init(source, snap_name, destination, dest_path)
 
-
-def init(source, dest_host, destination, snap_name, bookmark_name):
-    log(f"Performing full backup of {source}")
-
-    log(f"Sending '{snap_name}' to '{destination}'")
-    success = send_recv(snap_name, None, destination, dest_host)
-
-    # if the send command completely sucessfully
-    if success:
-        # if bookmark already exists, delete it
-        if bookmark_name in execute(f"zfs list -t bookmark {source}"):
-            execute(f"zfs destroy {bookmark_name}")
-
-        # convert the source snapshot to a bookmark for future incremental sends
-        rc, stderr = execute(f"zfs bookmark {snap_name} {bookmark_name}", return_rc=True)
-
-        # if snapshot => bookmark conversion succeeded
-        if rc == 0:
-            return 0
-        else:
-            elog(f"Error converting snapshot '{snap_name}' into bookmark '{bookmark_name}'")
-            return 2
-    else:  # if the command failed, delete the orphaned snapshot
-        elog(f"Error: ZFS send failed")
-        return 1
+    except KeyboardInterrupt:
+        log("\nTerminating zsync")
+        log("Cleaning up")
+        raise SystemExit
 
 
-def refresh(source, dest_host, destination, snap_name, bookmark_name):
-    ssh_cmd = f"ssh {dest_host} " if ssh else ""
 
-    log(f"Sending incremental snapshot '{snap_name}' to '{destination}'")
-    success = send_recv(snap_name, bookmark_name, destination, dest_host)
+def init(source, snap_name, destination, dest_path):
+    log(f"Performing full backup of {source.zfs_path}")
 
-    # if send command failed, likely source/dest are out of sync or bookmark wasn't created
-    if not success and force:
-        # roll back each destination snapshot and attemp to sync
-        # the likelihood that this succeeds is low, but it's cheaper than a full backup
-        snaplist = list_snapshots(destination)
+    log(f"Sending '{snap_name}' to '{dest_path}'")
+    success = send_recv(source, snap_name, None, destination, dest_path)
 
-        if snaplist:
-            for dest_snap in snaplist:
-                snap_suffix = dest_snap.split("@")[1]
-                source_snap = f"{source}@{snap_suffix}"
-                if snap_suffix in execute(f"zfs list -t snapshot {source}"):
-                    log(f"Rolling back '{destination}' to snapshot '{dest_snap}'")
-                    execute(ssh_cmd + f"zfs rollback -rf {dest_snap}")
-                    log(f"Sending incremental snapshot '{snap_name}' to '{destination}'")
-                    success = send_recv(snap_name, source_snap, destination, dest_host)
-                    if success:
-                        break
+    if not success:
+        elog("ZFS send failed")
+    return success
+
+
+def refresh(source, snap_name, bookmark_name, destination, dest_path):
+    log(f"Sending incremental snapshot '{snap_name}' to '{dest_path}'")
+    success = send_recv(source, snap_name, bookmark_name, destination, dest_path)
 
     # if that didn't work, try full backup
     if not success:
-        elog("Error: ZFS incremental send failed")
+        elog("ZFS incremental send failed")
         if force:
             log("Attempting full backup")
-            vlog(f"Destroying destination dataset '{destination}'")
-            execute(ssh_cmd + f"zfs destroy -r {destination}")
-            result = init(source, dest_host, destination, snap_name, bookmark_name)
-            return result
+            vlog(f"Destroying destination dataset '{dest_path}'")
+            execute(f"{destination.ssh_cmd} zfs destroy -r {dest_path}")
+            return init(source, snap_name, destination, dest_path)
         else:
             log("Supply -f to force overwrite (full backup)")
-            return 1
-
-    # if success, clean up
-    if bookmark_name in execute(f"zfs list -t bookmark {source}"):
-        vlog("Deleting old bookmark")
-        execute(f"zfs destroy {bookmark_name}")
+            return False
 
     # only save most recent snapshot on destination
-    purgelist = list_snapshots(destination)
+    purgelist = list_snapshots(destination.ssh_cmd, dest_path)[1:]
     if purgelist:
-        del purgelist[0]  # remove latest snapshot from list
         for snap in purgelist:  # delete snapshots remaining on list
             vlog(f"Destroying snapshot on destination: {snap}")
-            execute(ssh_cmd + f"zfs destroy {snap}")
-
-    vlog(f"Converting source snapshot into bookmark: {snap_name} -> {bookmark_name}")
-    rc, stderr = execute(f"zfs bookmark {snap_name} {bookmark_name}", return_rc=True)
-
-    # if snapshot => bookmark conversion succeeded
-    if rc == 0:
-        return 0
-    else:
-        elog(f"Error converting snapshot '{snap_name}' into bookmark")
-        return 2
+            execute(f"{destination.ssh_cmd} zfs destroy {snap}")
+    return True
 
 
 def execute(command, return_rc=False):
@@ -294,18 +211,26 @@ def execute(command, return_rc=False):
         return result.stdout
 
 
-def send_recv(snap_name, bookmark_name, destination, dest_host):
+def send_recv(source, snap_name, bookmark_name, destination, dest_path):
     if pvmissing := which("pv") is None:
-        elog("Error: pv: command not found. Cannot print status")
+        elog("pv: command not found. Cannot print status")
 
-    ssh_cmd = f"ssh {dest_host} " if dest_host is not None else ""
+    # if encryption is enabled on destination
+    parent_dataset = dest_path.rsplit("/", 1)[0]
+    dest_encrypted = destination.properties[parent_dataset]["encryption"] != "off"
+    src_encrypted = source.properties["encryption"] != "off"
+
+    if dest_encrypted and not src_encrypted:
+        send_opts = "Lc"
+    else:
+        send_opts = "w"
 
     if bookmark_name is not None:
-        cmd1 = f"zfs send -wi {bookmark_name} {snap_name}".split()
-        cmd2 = (ssh_cmd + f"zfs recv -vFu {destination}").split()
+        cmd1 = f"{source.ssh_cmd} zfs send -{send_opts} -i {bookmark_name} {snap_name}".split()
+        cmd2 = f"{destination.ssh_cmd} zfs recv -vFu {dest_path}".split()
     else:
-        cmd1 = f"zfs send -w {snap_name}".split()
-        cmd2 = (ssh_cmd + f"zfs recv -vFu {destination}").split()
+        cmd1 = f"{source.ssh_cmd} zfs send -{send_opts} {snap_name}".split()
+        cmd2 = f"{destination.ssh_cmd} zfs recv -vFu {dest_path}".split()
 
     p1 = subprocess.Popen(cmd1, stdout=subprocess.PIPE)
 
@@ -330,60 +255,20 @@ def send_recv(snap_name, bookmark_name, destination, dest_host):
     return p3.returncode == 0
 
 
-def pool_manager(imported, exported, dest_host):
-    for pool in exported:
-        try:
-            import_pool(pool, dest_host)
-            yield pool
-        except KeyboardInterrupt:
-            log(f"\nReceived interrupt while importing pool")
-            log("Cleaning up")
-        finally:
-            retries = 2
-            while export_pool(pool, dest_host) == 1 and retries > 0:
-                print("Retrying...")
-                retries -= 1
-
-    for pool in imported:
-        yield pool
-
-
-def import_pool(pool, dest_host):
-    ssh_cmd = f"ssh {dest_host} " if dest_host is not None else ""
-    logappend = f" on host '{dest_host}'" if dest_host is not None else ""
-    vlog(f"Importing pool '{pool}'" + logappend)
-    rc, stderr = execute(ssh_cmd + f"zpool import {pool}", return_rc=True)
-    if rc != 0:
-        elog(f"Error importing pool: '{pool}' - {stderr}")
-        return rc
-
-
-def export_pool(pool, dest_host):
-    ssh_cmd = f"ssh {dest_host} " if dest_host is not None else ""
-    logappend = f" on host '{dest_host}'" if dest_host is not None else ""
-    vlog(f"Exporting pool '{pool}'" + logappend)
-    rc, stderr = execute(ssh_cmd + f"zpool export {pool}", return_rc=True)
-    if rc != 0:
-        elog(f"Error exporting pool: '{pool}' - {stderr}")
-        if "no such pool" in stderr:
-            return 2
-        else:
-            return rc
-
-
-def list_snapshots(dataset):
-    snaplist = execute(f"zfs list -t snapshot -s creation -o name {dataset}").splitlines()
+def list_snapshots(ssh_cmd, dataset):
+    snaplist = execute(f"{ssh_cmd} zfs list -t snapshot -s creation -o name {dataset}").splitlines()
     if snaplist:
         del snaplist[0]  # remove header from list
         snaplist.reverse()  # most recent first
-    return snaplist  # trim garbage
+    return snaplist
 
 
-def delete_snapshot(snap_name):
-    vlog(f"Deleting source snapshot '{snap_name}'")
-    rc, stderr = execute(f"zfs destroy {snap_name}", return_rc=True)
-    if rc != 0:
-        elog(f"Error deleting snapshot: '{snap_name}' - {stderr}")
+def list_bookmarks(ssh_cmd, dataset):
+    bookmarklist = execute(f"{ssh_cmd} zfs list -t bookmark -s creation -o name {dataset}").splitlines()
+    if bookmarklist:
+        del bookmarklist[0]  # remove header from list
+        bookmarklist.reverse()  # most recent first
+    return bookmarklist
 
 
 def log(message):
@@ -397,11 +282,214 @@ def vlog(message):
 
 
 def elog(message):
-    print(f"{date_time} {message}")
+    date_time = datetime.now().isoformat(timespec='seconds')
+    print(f"{date_time} | Error: {message}")
 
 
-try:
-    main()
-except KeyboardInterrupt:
-    log("Terminating zsync")
 
+class Path:
+    def __init__(self, path):
+        self.zfs_path = path
+        self.ssh_cmd = ""
+        self.remote_user = "root"
+        self.remote_host = ""
+        self.ssh = self.parse_ssh()
+
+    def parse_ssh(self):
+        if ":" in self.zfs_path:
+            self.remote, self.zfs_path = self.zfs_path.split(":")
+            if "@" in self.remote:
+                self.remote_user, self.remote_host = self.remote.split("@")
+            else:
+                self.remote_host = self.remote
+            self.ssh_cmd = f"ssh {self.remote}"
+            # TODO: check that ssh command works 
+            return True
+        else:
+            return False
+
+    def permissions(self, path):
+        vlog(f"Checking permissions on dataset: {self.remote_host}:{self.zfs_path}")
+        raw_perms = execute(f"{self.ssh_cmd} zfs allow {path}")
+        if raw_perms:
+            for line in raw_perms.splitlines()[2:]:
+                if f"user {self.remote_user}" in line:
+                    return line.split(f"user {self.remote_user}")[1].strip().split(",")
+        else:
+            return []
+
+    def get_properties(self, path):
+        vlog(f"Checking properties on dataset: {self.remote_host}:{path}")
+        properties = {}
+        raw_props = execute(f"{self.ssh_cmd} zfs get all {path}").splitlines()
+        for line in raw_props[1:]:
+            line = line.split()
+            properties[line[1]] = line[2]
+        return properties
+
+
+class Source(Path):
+    def __init__(self, path):
+        Path.__init__(self, path)
+        self.check_source()
+        self.properties = self.get_properties(self.zfs_path)
+
+
+    def check_source(self):
+        # check that source dataset exists
+        if self.ssh:
+            if self.zfs_path not in execute(f"{self.ssh_cmd} zfs list"):
+                elog(f"on {self.remote_host}: source dataset '{self.zfs_path}' does not exist")
+                exit(2)
+
+            # Check permissions of remote user
+            if not self.remote_user == "root":
+                perms = self.permissions(self.zfs_path)
+                if missing_perms := set(["snapshot", "bookmark", "send"]).difference(perms): #TODO: determine correct source perms
+                    elog(f"user '{self.remote_user}' on remote source '{self.remote_host}:{self.zfs_path}'"
+                         f" lacks required permissions: {missing_perms}")
+                    exit(2)
+        else:
+            if self.zfs_path not in execute("zfs list"):
+                elog(f"source dataset '{self.zfs_path}' does not exist")
+                exit(2)
+
+
+    def snapshot(self):
+        date_time = datetime.now().isoformat(timespec='seconds')
+        snap_name = f"{self.zfs_path}@zsync::{date_time}"
+        if self.ssh:
+            vlog(f"Snapshotting source '{snap_name}' on {self.remote_host}")
+            execute(f"{self.ssh_cmd} zfs snapshot {snap_name}")
+        else:
+            vlog(f"Snapshotting source '{snap_name}'")
+            execute(f"zfs snapshot {snap_name}")
+        return snap_name
+
+
+    def bookmark(self, snap_name, destination, dest_path):
+        date_time = snap_name.split("::")[1]
+        formatted_dest = dest_path.replace("/", "_")
+        if destination.ssh:
+            undated_bookmark = f"{self.zfs_path}#{destination.remote_host}:{formatted_dest}"
+        else:
+            undated_bookmark = f"{self.zfs_path}#{formatted_dest}"
+
+        if existing_bookmarks := list_bookmarks(self.ssh_cmd, self.zfs_path):
+            vlog("Deleting old bookmarks")
+            matching_bookmarks = [b for b in existing_bookmarks if undated_bookmark in b]
+            for bookmark in matching_bookmarks:
+                vlog(f"Destroying bookmark '{bookmark}'")
+                execute(f"{self.ssh_cmd} zfs destroy {bookmark}")
+
+        bookmark_name = f"{undated_bookmark}::{date_time}"
+        vlog(f"Converting source snapshot into bookmark: {snap_name} -> {bookmark_name}")
+        execute(f"{self.ssh_cmd} zfs bookmark {snap_name} {bookmark_name}")
+        self.delete_snapshot(snap_name)
+
+
+    def delete_snapshot(self, snap_name):
+        vlog(f"Deleting snapshot '{snap_name}'")
+        for _ in range(3):
+            rc, stderr = execute(f"{self.ssh_cmd} zfs destroy {snap_name}", return_rc=True)
+            if rc == 0:
+                return
+            time.sleep(1)
+        elog(f"could not delete snapshot '{snap_name}' : {stderr}")
+
+
+
+class Destination(Path):
+    def __init__(self, path):
+        Path.__init__(self, path)
+        self.check_wildcards()
+        self.check_destination()
+        self.properties = {}
+        for pool, dest_path in self.pool_manager(no_mount=True):
+            parent_dataset = dest_path.rsplit("/", 1)[0]
+            self.properties[parent_dataset] = self.get_properties(parent_dataset)
+
+
+    def check_wildcards(self):
+        """Finds every pools that matches destination.zfs_path with wildcard"""
+        vlog("Querying ZFS pools available for import. This may take a few seconds.")
+        imported = [pool for pool in execute(f"{self.ssh_cmd} zpool list -o name").splitlines() if pool != "NAME"]
+        exported = [pool.split(": ")[1] for pool in execute(f"{self.ssh_cmd} zpool import").splitlines() if "pool:" in pool]
+        dest_pool, self.dataset_path = self.zfs_path.split("/", 1)
+
+        self.imported_pools = []
+        self.exported_pools = []
+        if "*" in dest_pool or "?" in dest_pool:
+            vlog("Checking wildcards")
+            self.imported_pools = fnmatch.filter(imported, dest_pool)
+            self.exported_pools = fnmatch.filter(exported, dest_pool)
+            if not (self.imported_pools or self.exported_pools):
+                elog(f"no valid substitutions for '{dest_pool}' exist")
+                exit(2)
+        else:  # not checking wildcard
+            if dest_pool in imported:
+                self.imported_pools = [dest_pool]
+            elif dest_pool in exported:
+                self.exported_pools = [dest_pool]
+            else:
+                elog(f"destination pool '{dest_pool}' does not exist")
+                exit(2)
+
+        remote_string = f" on remote host '{self.remote_host}'" if self.ssh else ""
+        vlog(f"Syncing to pools: {self.imported_pools + self.exported_pools}{remote_string}")
+
+
+    def check_destination(self):
+        if self.ssh and not self.remote_user == "root":
+            for pool, dest_path in self.pool_manager(no_mount=True):
+                perms = self.permissions(dest_path)
+                if missing_perms := set(["create", "destroy", "mount", "receive"]).difference(perms):
+                    elog(f"user '{self.remote_user}' on remote destination '{self.remote_host}:{parent_ds}'"
+                         f" lacks required permissions: {missing_perms}")
+                    exit(2)
+
+
+
+    def pool_manager(self, no_mount=False):
+        for pool in self.exported_pools:
+            try:
+                self.import_pool(pool, no_mount)
+                yield pool, f"{pool}/{self.dataset_path}"
+            except KeyboardInterrupt:
+                log("\nReceived interrupt while importing pool")
+                log("Cleaning up")
+            finally:
+                retries = 2
+                while self.export_pool(pool) == 1 and retries > 0:
+                    print("Retrying...")
+                    retries -= 1
+
+        for pool in self.imported_pools:
+            yield pool, f"{pool}/{self.dataset_path}"
+
+
+    def import_pool(self, pool, no_mount):
+        opt = "-N" if no_mount else ""
+        vlog(f"Importing {opt} pool '{pool}'")
+        rc, stderr = execute(f"{self.ssh_cmd} zpool import {opt} {pool}", return_rc=True)
+        if rc != 0:
+            elog(f"Error importing pool: '{pool}' - {stderr}")
+            return rc
+
+
+    def export_pool(self, pool):
+        rc, stderr = execute(f"{self.ssh_cmd} zpool export {pool}", return_rc=True)
+        if rc != 0:
+            elog(f"Error exporting pool: '{pool}' - {stderr}")
+            if "no such pool" in stderr:
+                return 2
+            else:
+                return rc
+
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        log("Terminating zsync")

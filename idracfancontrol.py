@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-version="1.3"
+version="1.4"
 
 # control the idrac fans automatically using a PID controller
 
@@ -147,7 +147,7 @@ def set_fan_speed(speed):
 
 def get_fan_speed():
     rawstring = execute("ipmitool sdr type fan")
-    speeds = [int(line.split("|")[4].strip().split(" ")[0]) for line in rawstring.split('\n') if line and fan_regex.match(line)]
+    speeds = [int(line.split("|")[4].strip().split(" ")[0]) for line in rawstring.split('\n') if line and fan_regex.match(line) and "Disabled" not in line]
     fan_avg = sum(speeds) / len(speeds)
     return fan_avg
 
@@ -165,6 +165,8 @@ def get_temps():
             print("bad data from ipmi!!!!")
             print(rawstring)
             return None
+        if temp == "Disabled":
+            continue
         if "inlet" in line.lower():
             ambient.append(int(temp))
         else: # "inlet" not in line
@@ -200,12 +202,6 @@ def execute(command):
 def exit():
     # Return control to idrac so system doesn't overheat during soft reboots
     execute("ipmitool raw 0x30 0x30 0x01 0x01")
-
-    # temporary debug
-    from datetime import datetime
-    with open("/idrac_debug.txt", "a") as df:
-        date = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
-        df.write(f"{date} :: Shutting down idracfancontrol\n")
 
 
 if __name__ == "__main__":

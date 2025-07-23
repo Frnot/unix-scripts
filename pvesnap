@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# v1.2
+# v1.3
 
 import time
 from datetime import datetime
@@ -29,13 +29,12 @@ Options
      --help       show help"""
 
 help = """
-The prune options work a lot like the proxmox backup retention options.
-See: https://pbs.proxmox.com/docs/prune-simulator/ for a handy simulator.
+the prune options work a lot like the proxmox backup retention options
 
 keep last <N>
     Keep the last <N> backup snapshots.
 keep minutely <N>
-    Keep backups for the last <N> minutes. If there is more than one backup for a single minute, only the latest is kept.
+    Keep backups for the last <N> hours. If there is more than one backup for a single hour, only the latest is kept.
 keep hourly <N>
     Keep backups for the last <N> hours. If there is more than one backup for a single hour, only the latest is kept.
 keep daily <N>
@@ -49,8 +48,6 @@ keep yearly <N>
 
 To snapshot all running VMs automatically, calculated your desired options and then put the following line in the root crontab:
 "/usr/sbin/qm list | tail -n+2 | grep "running" | awk '{print $1}' | xargs -I vmid pvesnap vmid <options>"
-For all running containers:
-"/usr/sbin/pct list | tail -n+2 | grep "running" | awk '{print $1}' | xargs -I vmid pvesnap vmid <options>"
 """
 
 
@@ -130,13 +127,14 @@ def main():
             print(usage)
             return
 
-    type = is_container(vmid)
+    container = is_container(vmid)
+    nomem = False if container else has_pci_device(vmid)
 
     if not dry_run:
         retry = 3
         while True:
             retry -= 1
-            success = take_snapshot(vmid, type)
+            success = take_snapshot(vmid, container, nomem)
             if success:
                 break
 
@@ -152,7 +150,7 @@ def main():
         if verbose:
             print("'keep all' flag set. will not prune snapshots.")
     else:
-        prune(vmid, type, keep_last, keep_minutely, keep_hourly, keep_daily, keep_weekly, keep_monthly, keep_yearly, dry_run)
+        prune(vmid, container, keep_last, keep_minutely, keep_hourly, keep_daily, keep_weekly, keep_monthly, keep_yearly, dry_run)
 
 
 def is_container(vmid):
@@ -168,7 +166,12 @@ def is_container(vmid):
     return result == "lxc"
 
 
-def take_snapshot(vmid, container):
+def has_pci_device(vmid):
+    result = subprocess.run(["/usr/sbin/qm", "config", vmid], capture_output=True, text=True)
+    return "hostpci" in result.stdout
+
+
+def take_snapshot(vmid, container, nomem):
     time = datetime.now().strftime("%Y-%m-%dT%H%M")
     if verbose:
         print(f"Taking snapshot of vmid: {vmid} (auto_{time})")
@@ -179,6 +182,8 @@ def take_snapshot(vmid, container):
 
     if container:
         cmd = ["/usr/sbin/pct", "snapshot", vmid, f"auto_{time}"]
+    elif nomem:
+        cmd = ["/usr/sbin/qm", "snapshot", vmid, f"auto_{time}"]
     else:
         cmd = ["/usr/sbin/qm", "snapshot", vmid, f"auto_{time}", "--vmstate"]
     if verbose:
